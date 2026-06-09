@@ -1132,20 +1132,28 @@ def row_to_pharmacy_record(row_dict: dict) -> dict:
         or row_dict.get("ingredient_clean")
         or row_dict.get(INGREDIENT_COL, "")
     )
-    price = row_dict.get("price_egp", "")
-    if price and str(price).strip() not in ("", "nan"):
+    price_val = row_dict.get("price_egp", "")
+    price_note = ""
+    if row_dict.get("price_corrected") in (True, "True", "true", 1):
+        raw = row_dict.get("price_egp_raw")
+        if raw not in (None, "", "nan") and str(raw) != str(price_val):
+            price_note = f"(مُقدَّر — السعر الأصلي في المصدر: {raw})"
+    if price_val and str(price_val).strip() not in ("", "nan"):
         try:
-            price = f"{float(price):g} جنيه"
+            price = f"{float(price_val):g} جنيه"
         except (ValueError, TypeError):
-            price = str(price)
+            price = str(price_val)
     else:
         price = "غير متوفر"
+    if price_note:
+        price = f"{price} {price_note}"
     return {
         "row": row_dict.get("row_id"),
         "name_ar": row_dict.get("name_ar", ""),
         "name_en": row_dict.get("name_en", ""),
         "active_ingredient": str(ai).strip(),
         "price_egp": price,
+        "price_estimated": bool(price_note),
         "form": row_dict.get("form") or row_dict.get("form_clean", ""),
         "dosage": row_dict.get("dosage") or row_dict.get("dosage_clean", ""),
         "dose": row_dict.get("dose", ""),
