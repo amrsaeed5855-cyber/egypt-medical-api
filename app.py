@@ -15,5 +15,5 @@ def health():
 
 @app.post("/chat")
 def chat(req: dict):
-    response = rag(req["query"], req.get("history", []))
+    response = rag(req.get("message") or req.get("query"), req.get("history", []))
     return {"response": response}
