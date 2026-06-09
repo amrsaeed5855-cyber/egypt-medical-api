@@ -44,8 +44,8 @@ textarea:focus { border-color: #00c89660; }
 <header>
   <div class="logo">⚕</div>
   <div>
-    <div class="title">دكتور AI المصري</div>
-    <div class="sub">مساعد طبي ذكي</div>
+    <div class="title">صيدلي AI المصري</div>
+    <div class="sub">Subagent صيدلة — ElevenLabs Workflow</div>
   </div>
   <div class="dot"></div>
 </header>
@@ -53,8 +53,8 @@ textarea:focus { border-color: #00c89660; }
 <div id="msgs">
   <div class="welcome fadein">
     <div>🩺</div>
-    <strong>أهلاً بك في دكتور AI</strong>
-    <p style="margin-top:6px">احكيلي عن أعراضك — ابدأ بعمرك وجنسك</p>
+    <strong>أهلاً بك في صيدلي AI</strong>
+    <p style="margin-top:6px">اسأل عن دواء، جرعة، تفاعلات، أو توصية OTC</p>
   </div>
 </div>
 
@@ -149,7 +149,7 @@ async function send() {
 
 function clearChat() {
   history = [];
-  msgsEl.innerHTML = '<div class="welcome fadein"><div>🩺</div><strong>أهلاً بك في دكتور AI</strong><p style="margin-top:6px">احكيلي عن أعراضك — ابدأ بعمرك وجنسك</p></div>';
+  msgsEl.innerHTML = '<div class="welcome fadein"><div>💊</div><strong>أهلاً بك في صيدلي AI</strong><p style="margin-top:6px">اسأل عن دواء، جرعة، تفاعلات، أو توصية OTC</p></div>';
   errEl.textContent = "";
   newBtn.style.display = "none";
 }
