@@ -9,9 +9,9 @@ Architecture
 * This subagent receives **delegated tasks** for medication guidance only.
 * It returns **structured workflow responses** so ElevenLabs can resume control.
 
-Scope: medication info, OTC recommendations, interactions, contraindications.
-Out of scope: appointments, diagnosis, emergency triage, specialist referrals
-→ signal `RETURN_TO_ORCHESTRATOR: true` back to ElevenLabs.
+Scope: pharmacy only — drug info, prices, ingredients, OTC suggestions from dataset.
+No diagnosis. Out of scope → `RETURN_TO_ORCHESTRATOR: true` to ElevenLabs.
+Every drug shown includes dataset row number, price, and active ingredient.
 
 Startup architecture (Railway-compatible — no OOM)
 ---------------------------------------------------
@@ -94,53 +94,41 @@ _rag_lock = Lock()
 # ══════════════════════════════════════════════════════════════════════════════
 # ② SYSTEM PROMPT
 # ══════════════════════════════════════════════════════════════════════════════
-SYSTEM_PROMPT = """أنت صيدلي مصري خبير — **subagent صيدلة** داخل workflow ElevenLabs.
-الوكيل الرئيسي (ElevenLabs) بيدير المحادثة العامة والتقييم الطبي والحجز.
-أنت بتستقبل مهام مُفوَّضة للصيدلة فقط وترجع ردوداً منظمة للـ workflow.
+SYSTEM_PROMPT = """أنت صيدلي مصري عندك 15 سنة خبرة — **subagent صيدلة** داخل workflow ElevenLabs.
+خبرتك الطويلة بتخليك تعرف تختار المادة الفعالة الصح وتطابقها بأدق دواء من قاعدة البيانات المصرية.
+الوكيل الرئيسي بيدير المحادثة العامة والتشخيص والحجز. أنت للصيدلة فقط.
 
-## نطاق عملك (فقط)
-- شرح الأدوية والمواد الفعالة والجرعات والتحذيرات والتفاعلات والبدائل.
-- توصيات OTC آمنة بناءً على المعلومات المُمرَّرة من الوكيل الرئيسي.
-- فحص موانع الاستعمال والتفاعلات الدوائية وملاءمة شكل الدواء.
+## دورك
+- شرح أدوية، مواد فعالة، جرعات، تحذيرات، تفاعلات، بدائل.
+- اقتراح أدوية OTC آمنة من **قاعدة البيانات المصرية** فقط — اختار المادة الفعالة المناسبة بدقة عشان النظام يجيب الدواء الصح (الاسم، السعر، رقم الصف).
+- لو المريض سأل عن دواء بالاسم التجاري، اعتمد على بيانات الداتاسيت المُمرَّرة لك.
+- إجابات قصيرة وواضحة بالعامية المصرية.
+- لو المريض ذكر معلومة بنفسه (سن، أمراض مزمنة، أدوية، حساسية) متسألش عنها تاني.
 
-## خارج نطاقك — أرجع التحكم للوكيل الرئيسي
-- حجز مواعيد أو إدارة العيادات → `RETURN_TO_ORCHESTRATOR: true` + `ESCALATION_REASON: booking`
-- تشخيص طبي نهائي أو تقييم أعراض من الصفر → `ESCALATION_REASON: diagnosis`
-- حالات طوارئ أو علامات خطر → `ESCALATION_REASON: emergency`
-- تحويل لطبيب مختص → `ESCALATION_REASON: referral`
-لا تحاول تنفيذ هذه المهام — أخبر الوكيل الرئيسي يتولى الأمر.
+## ممنوع تماماً
+- **لا تشخّص** — لا تذكر اسم مرض كتشخيص (مثل: إنفلونزا، التهاب رئوي، إلخ).
+- لا تحجز مواعيد ولا تعمل triage طبي.
+- لو المريض عايز تشخيص أو حجز أو طوارئ → `RETURN_TO_ORCHESTRATOR: true`.
 
-## قواعد السلامة الدوائية
-- **لا تفترض** أن المريض يتناول أدوية لمجرد وجود مرض مزمن — استخدم الملخص المُمرَّر أو اسأل سؤالاً واحداً لو ناقص.
-- لا تكتب `───CLINICAL_PLAN───` إلا لو المهمة تتطلب اقتراح أدوية والمعلومات كافية لسلامة الدواء.
-- متوصفش NSAIDs (إيبوبروفين، ديكلوفيناك، نابروكسين) مع ضغط أو سكر أو كلى.
-- متوصفش فينيل إفرين (phenylephrine) أو سودوإيفيدرين (pseudoephedrine) مع ضغط عالي.
-- متوصفش قطرة عين لأعراض عامة — للعين فقط.
-- متوصفش حقن أو أدوية وريدية.
-- متوصفش دواءين نفس الشغل.
-- لو عند المريض مرض كبد: تأكد من نوعه قبل باراسيتامول أو أدوية كبدية.
-- استخدم المواد الفعالة بالإنجليزي في البلوك.
+## سلامة دوائية (عند الاقتراح)
+- لا تفترض أدوية المريض — اسأل لو ناقص.
+- لا NSAIDs مع ضغط/سكر/كلى.
+- لا فينيل إفرين/سودوإيفيدرين مع ضغط.
+- لا قطرة عين لأعراض عامة.
+- لا حقن. لا دواءين نفس الشغل.
+- استخدم المواد الفعالة **بالإنجليزي بدقة** في INGREDIENTS (مثل paracetamol مش "مسكن") — النظام يبحث في الداتاسيت ويرجع الدواء الصح برقمه وسعره.
 
-## أسلوب التواصل
-- إجابات قصيرة، واضحة، بالعامية المصرية.
-- **ممنوع** "متقلقش خالص" أو "بسيطة" أو "إن شاء الله حاجة بسيطة".
-- استخدم: "بناءً على المعلومات المتاحة، فيه أكتر من احتمال ومحتاجين تفاصيل أكتر."
-- لا تشخّص بثقة مفرطة — التشخيص مسؤولية الوكيل الرئيسي.
-- لا تسأل عن السن/الجنس/الأمراض المزمنة إلا لو ضروري لسلامة الدواء وغير موجود في الملخص.
-
-## بلوك العلاج (عند اقتراح أدوية فقط)
+## بلوك الأدوية (لما تحتاج تقترح من الداتاسيت)
 ───CLINICAL_PLAN───
-INGREDIENTS: ingredient1, ingredient2
-EXCLUDED_INGREDIENTS: ingredient_a
-ESCALATION_LEVEL: none|caution|urgent
-DIAGNOSIS_CONFIDENCE: low|medium|high
+INGREDIENTS: paracetamol, loratadine
+EXCLUDED_INGREDIENTS: ibuprofen
 NON_DRUG_ADVICE: نصيحة1 | نصيحة2
 
-## بلوك الرد للـ workflow (إلزامي في كل رد)
+## بلوك workflow (إلزامي)
 ───WORKFLOW_RESPONSE───
 TASK_STATUS: completed|needs_info|out_of_scope|escalate
 RETURN_TO_ORCHESTRATOR: true|false
-ESCALATION_REASON: none|booking|diagnosis|emergency|referral|specialist
+ESCALATION_REASON: none|booking|diagnosis|emergency|referral
 MISSING_INFO: item1 | item2
 """
 
@@ -750,26 +738,19 @@ def subagent_emergency_escalation(ctx: PatientContext) -> Optional[WorkflowRespo
 
 
 def pre_prescription_gate(ctx: PatientContext, plan: ClinicalPlan) -> Optional[list]:
-    """Return missing medication-safety fields only (not full medical triage)."""
+    """Pharmacy-only safety checks before suggesting drugs from dataset."""
     if plan.is_conversational or not plan.ingredients:
-        return None
-    if plan.escalation_level == "urgent":
         return None
 
     missing = []
-    if ctx.age is None:
-        missing.append("السن (لسلامة الجرعة)")
     if not ctx.meds_confirmed and not ctx.meds_denied:
-        missing.append("الأدوية الحالية (أو تأكيد عدم تناول أدوية)")
+        missing.append("بتاخد أدوية حالياً؟ (لو لأ قول 'مش باخد أدوية')")
     if not ctx.allergies_asked and not ctx.allergies:
-        missing.append("الحساسية الدوائية (أو تأكيد عدم وجود حساسية)")
+        missing.append("عندك حساسية من دواء؟ (لو لأ قول 'مفيش حساسية')")
+    if ctx.age is None:
+        missing.append("السن (للجرعة المناسبة)")
     if ctx.sex == "female" and ctx.age and ctx.age >= 18 and ctx.pregnant is None:
-        missing.append("الحمل/الرضاعة (لو ينطبق)")
-
-    if "liver" in ctx.chronic_conditions:
-        liver_meds = ["paracetamol", "acetaminophen", "loperamide"]
-        if any(ing in liver_meds for ing in plan.ingredients) and not ctx.liver_assessed:
-            missing.append("نوع مرض الكبد وآخر تحاليل وظائف كبد")
+        missing.append("حامل أو مرضع؟ (لو ينطبق)")
 
     return missing or None
 
@@ -1144,12 +1125,90 @@ def ingredient_purpose(ingredient: str) -> str:
     return ""
 
 
+def row_to_pharmacy_record(row_dict: dict) -> dict:
+    """Map a dataset row to a pharmacy record for API + display."""
+    ai = (
+        row_dict.get("active_ingredient")
+        or row_dict.get("ingredient_clean")
+        or row_dict.get(INGREDIENT_COL, "")
+    )
+    price = row_dict.get("price_egp", "")
+    if price and str(price).strip() not in ("", "nan"):
+        try:
+            price = f"{float(price):g} جنيه"
+        except (ValueError, TypeError):
+            price = str(price)
+    else:
+        price = "غير متوفر"
+    return {
+        "row": row_dict.get("row_id"),
+        "name_ar": row_dict.get("name_ar", ""),
+        "name_en": row_dict.get("name_en", ""),
+        "active_ingredient": str(ai).strip(),
+        "price_egp": price,
+        "form": row_dict.get("form") or row_dict.get("form_clean", ""),
+        "dosage": row_dict.get("dosage") or row_dict.get("dosage_clean", ""),
+        "dose": row_dict.get("dose", ""),
+        "warnings": row_dict.get("safety_cautions") or [],
+    }
+
+
+def format_drug_block(rec: dict) -> str:
+    lines = [f"💊 **{rec['name_ar'] or rec['name_en']}** `(صف {rec['row']})`"]
+    if rec.get("name_en") and rec.get("name_ar"):
+        lines.append(f"   • الاسم الإنجليزي: {rec['name_en']}")
+    lines.append(f"   • المادة الفعالة: {rec['active_ingredient'] or '—'}")
+    lines.append(f"   • السعر: {rec['price_egp']}")
+    if rec.get("form"):
+        lines.append(f"   • الشكل: {rec['form']}")
+    if rec.get("dosage"):
+        lines.append(f"   • التركيز/الجرعة: {rec['dosage']}")
+    if rec.get("dose"):
+        lines.append(f"   • الجرعة: {rec['dose']}")
+    if rec.get("warnings"):
+        lines.append(f"   • ⚠️ { ' | '.join(rec['warnings'])}")
+    return "\n".join(lines)
+
+
+def search_drugs_by_name(name: str, ctx: PatientContext, max_results: int = 5) -> List[Dict[str, Any]]:
+    """Direct lookup by trade name in the Egyptian drugs dataset."""
+    if df.empty or not name or len(name.strip()) < 3:
+        return []
+    norm_name = normalize_text(name)
+    hits_ar = process.extract(norm_name, df["name_ar"].tolist(), limit=max_results * 2)
+    hits_en = process.extract(norm_name, df["name_en"].tolist(), limit=max_results * 2)
+    seen, results = set(), []
+    for hits in (hits_ar, hits_en):
+        for _, score, idx in hits:
+            if score < 80 or idx in seen:
+                continue
+            row = df.iloc[idx]
+            ai = row.get(INGREDIENT_COL, "").strip().lower()
+            name_ar = row.get("name_ar", "")
+            name_en = row.get("name_en", "")
+            if is_baby_drug(name_ar, name_en, ctx.age):
+                continue
+            if any(f in name_en.lower() for f in EXCLUDED_FORMS):
+                continue
+            allowed, _ = screen_ingredient_safety(ai, ctx)
+            if not allowed:
+                continue
+            seen.add(idx)
+            row_dict = row.to_dict()
+            row_dict["row_id"] = idx
+            row_dict["safety_cautions"] = caution_notes_for_context(ai, ctx)
+            results.append(row_dict)
+            if len(results) >= max_results:
+                return results
+    return results
+
+
 def retrieve_drugs_structured(plan: ClinicalPlan, ctx: PatientContext) -> tuple:
     """Return (formatted_text, medications_list, warnings_list, ingredients_list)."""
     if not plan.ingredients:
         return "", [], [], []
 
-    excluded, seen_ingredients = set(plan.excluded_ingredients), set()
+    excluded, seen_ingredients, seen_rows = set(plan.excluded_ingredients), set(), set()
     drug_blocks, medications, warnings, ingredients_out = [], [], [], []
     found_any = False
 
@@ -1162,35 +1221,30 @@ def retrieve_drugs_structured(plan: ClinicalPlan, ctx: PatientContext) -> tuple:
             seen_ingredients.add(ing)
             ingredients_out.append(ing)
             purpose = ingredient_purpose(ing)
-            brands = [r.get("name_ar", "—") for r in rows if r.get("name_ar")]
-            cautions = dedupe_keep_order([
-                c for r in rows for c in (r.get("safety_cautions") or [])
-            ])
-            warnings.extend(cautions)
-            medications.append({
-                "active_ingredient": ing,
-                "purpose": purpose,
-                "brands_ar": brands,
-                "warnings": cautions,
-            })
-            drug_blocks.append(f"🔹 **{ing.title()}**")
             if purpose:
-                drug_blocks.append(f"   📌 **الاستخدام:** {purpose}")
-            if brands:
-                drug_blocks.append(f"   💊 **العلامات المصرية:** {' | '.join(brands)}")
-            if cautions:
-                drug_blocks.append(f"   ⚠️ **تحذيرات:** {' | '.join(cautions)}")
+                drug_blocks.append(f"🔹 **{ing.title()}** — {purpose}")
+            else:
+                drug_blocks.append(f"🔹 **{ing.title()}**")
+            for r in rows:
+                rid = r.get("row_id")
+                if rid in seen_rows:
+                    continue
+                seen_rows.add(rid)
+                rec = row_to_pharmacy_record(r)
+                medications.append(rec)
+                warnings.extend(rec.get("warnings") or [])
+                drug_blocks.append(format_drug_block(rec))
             drug_blocks.append("")
 
     if not found_any:
         return (
-            "\n\n⚠️ مفيش أدوية متوفرة في القاعدة مطابقة للمواد الفعالة دي بعد فلاتر الأمان.",
+            "\n\n⚠️ مفيش أدوية في الداتاسيت مطابقة بعد فلاتر الأمان.",
             [], dedupe_keep_order(warnings), ingredients_out,
         )
 
-    result = "\n\n---\n✅ **أدوية مناسبة:**\n\n" + "\n".join(drug_blocks)
+    result = "\n\n---\n📋 **من قاعدة الأدوية المصرية:**\n\n" + "\n".join(drug_blocks)
     if plan.non_drug_advice:
-        result += "\n\n📋 **نصائح إضافية:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
+        result += "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
     return result, medications, dedupe_keep_order(warnings), ingredients_out
 
 
@@ -1199,47 +1253,27 @@ def retrieve_drugs(plan: ClinicalPlan, ctx: PatientContext) -> str:
     return text
 
 
-def format_differential(plan: ClinicalPlan) -> str:
-    if not plan.differential:
-        return ""
-    lines = ["\n\n🔍 **احتمالات تشخيصية (بناءً على المعلومات المتاحة):**"]
-    for item in plan.differential:
-        if ":" in item and "%" in item:
-            name, pct = item.rsplit(":", 1)
-            lines.append(f"   • {name.strip()}: {pct.strip()}")
-        else:
-            lines.append(f"   • {item}")
-    return "\n".join(lines)
-
-
 def build_patient_summary(ctx: PatientContext) -> str:
     def val(v, fallback="غير مذكور"):
-        if v is None:               return fallback
-        if isinstance(v, list):     return ", ".join(v) if v else fallback
-        if isinstance(v, bool):     return "نعم" if v else "لا"
+        if v is None:
+            return fallback
+        if isinstance(v, list):
+            return ", ".join(v) if v else fallback
+        if isinstance(v, bool):
+            return "نعم" if v else "لا"
         return str(v).strip() or fallback
 
-    meds_status = "لا يتناول أدوية (مؤكد)" if ctx.meds_denied else (
-        val(ctx.current_meds) if ctx.meds_confirmed else "غير مؤكد — اسأل صراحة"
+    meds_status = "لا يتناول أدوية" if ctx.meds_denied else (
+        val(ctx.current_meds) if ctx.meds_confirmed else "غير مؤكد"
     )
-    return f"""ملخص الحالة المهيكل:
+    return f"""ملخص صيدلي (من الوكيل الرئيسي أو المحادثة):
 - العمر: {val(ctx.age)}
 - الجنس: {ctx.sex}
-- حمل/رضاعة: {val(ctx.pregnant or ctx.breastfeeding)}
-- مدة الأعراض: {val(ctx.duration_text)}
-- الحرارة: {val(ctx.fever_text)}
-- الأعراض المستخرجة: {val(ctx.symptoms)}
-- شدة الأعراض: {val(ctx.symptom_severity)}
-- التهاب حلق: {val(ctx.sore_throat)}
-- احتقان أنف: {val(ctx.nasal_congestion)}
-- صعوبة تنفس: {val(ctx.breathing_difficulty)}
-- الحساسية: {val(ctx.allergies) if ctx.allergies_asked or ctx.allergies else "غير مؤكدة — اسأل"}
+- حمل/رضاعة: {val(ctx.pregnant)}/{val(ctx.breastfeeding)}
+- الحساسية: {val(ctx.allergies) if ctx.allergies_asked or ctx.allergies else "غير مؤكدة"}
 - الأمراض المزمنة: {val(ctx.chronic_conditions)}
 - الأدوية الحالية: {meds_status}
-- تفاصيل الكبد: {val(ctx.liver_disease_details) if "liver" in ctx.chronic_conditions else "غير مطلوب"}
-- علامات خطر: {val(ctx.red_flags)}
-- نوع الكحة: {ctx.cough_type}
-- دم/حرارة بالإسهال: {val(ctx.diarrhea_blood or ctx.diarrhea_fever)}
+- طلب المريض/الأعراض المذكورة: {val(ctx.symptoms) or ctx.complaint_text[:120]}
 """
 
 
@@ -1326,20 +1360,31 @@ def pharmacy_consult(
     if emergency:
         return emergency
 
+    # Always check dataset first for trade-name questions
+    direct_rows = search_drugs_by_name(query, ctx, max_results=3)
+    direct_records = [row_to_pharmacy_record(r) for r in direct_rows]
+    dataset_note = ""
+    if direct_records:
+        dataset_note = (
+            "\n\nبيانات من قاعدة الأدوية المصرية (استخدمها في ردك):\n"
+            + "\n\n".join(format_drug_block(r) for r in direct_records)
+        )
+
     gemini_messages = [
         {"role": "user" if m["role"] == "user" else "model",
          "parts": [{"text": m["content"]}]}
         for m in _trim_history_for_gemini(history)
     ]
-    task_note = f"\nنوع المهمة المُفوَّضة من ElevenLabs: {task_type}"
+    task_note = f"\nنوع المهمة: {task_type}"
     delegated_by = delegation.get("delegated_by")
     if delegated_by:
-        task_note += f"\nمُفوَّض من: {delegated_by}"
+        task_note += f" | مُفوَّض من: {delegated_by}"
     augmented = (
         build_patient_summary(ctx) +
         task_note +
-        "\nسؤال المهمة:\n" + query.strip() +
-        "\n\nأجب كصيدلي subagent — ارجع بلوك WORKFLOW_RESPONSE في كل رد."
+        "\nسؤال الصيدلية:\n" + query.strip() +
+        dataset_note +
+        "\n\nأجب كصيدلي فقط — لا تشخّص. ارجع WORKFLOW_RESPONSE."
     )
     gemini_messages.append({"role": "user", "parts": [{"text": augmented}]})
 
@@ -1376,25 +1421,40 @@ def pharmacy_consult(
             escalation_reason="emergency",
         )
 
-    # Medication info / safety check — no drug lookup needed
+    def _append_dataset_section(text: str) -> str:
+        if not direct_records:
+            return text
+        section = "\n\n---\n📋 **من قاعدة الأدوية المصرية:**\n\n"
+        section += "\n\n".join(format_drug_block(r) for r in direct_records)
+        if section.strip() in text:
+            return text
+        return text + section
+
+    # Medication info — answer from dataset + pharmacist explanation
     if task_type in ("medication_info", "drug_safety_check") and plan.is_conversational:
         suffix = ""
         if plan.non_drug_advice:
-            suffix = "\n\n📋 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
-        return _build_workflow_response(plan.visible_text + suffix, plan=plan)
+            suffix = "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
+        return _build_workflow_response(
+            _append_dataset_section(plan.visible_text + suffix),
+            plan=plan,
+            medications=direct_records,
+            warnings=dedupe_keep_order([w for r in direct_records for w in (r.get("warnings") or [])]),
+        )
 
-    # Conversational pharmacy turn (needs more info, no drugs yet)
+    # Conversational — no ingredients yet
     if plan.is_conversational or not plan.ingredients:
         missing = plan.workflow.get("missing_info") or []
         suffix = ""
         if plan.non_drug_advice:
-            suffix = "\n\n📋 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
+            suffix = "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
         status_out = "needs_info" if missing else "completed"
         return _build_workflow_response(
-            plan.visible_text + suffix,
+            _append_dataset_section(plan.visible_text + suffix),
             plan=plan,
             task_status=status_out,
             missing_info=missing,
+            medications=direct_records,
         )
 
     # Medication-safety gate before drug recommendations
@@ -1426,15 +1486,11 @@ def pharmacy_consult(
     drug_text, medications, warnings, ingredients = retrieve_drugs_structured(plan, ctx)
     suffix = []
     if "diabetes" in ctx.chronic_conditions or "hypertension" in ctx.chronic_conditions:
-        suffix.append("⚠️ عندك مرض مزمن (سكر/ضغط) — دي أدوية مؤقتة فقط، تابع مع طبيب مختص.")
+        suffix.append("⚠️ مرض مزمن (سكر/ضغط) — استشر طبيبك قبل الاستمرار.")
         warnings.append(suffix[-1])
     if "liver" in ctx.chronic_conditions:
-        suffix.append("⚠️ عندك مرض كبد — استخدم الأدوية بحذر ولا تتجاوز الجرعات الموصى بها.")
+        suffix.append("⚠️ مرض كبد — استخدم بحذر ولا تتجاوز الجرعة الموصى بها.")
         warnings.append(suffix[-1])
-    if plan.diagnosis_confidence == "low":
-        suffix.append("⚠️ الثقة في التوصية منخفضة — لو الأعراض زادت، ارجع للمساعد الرئيسي.")
-    elif plan.escalation_level == "caution":
-        suffix.append("⚠️ خد بالك وحافظ على متابعة الأعراض.")
 
     final = plan.visible_text + drug_text
     if suffix:
