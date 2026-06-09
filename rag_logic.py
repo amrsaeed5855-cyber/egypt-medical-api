@@ -53,7 +53,13 @@ from typing import Optional, List, Dict, Any
 # AI / RAG IMPORTS
 # ──────────────────────────────────────────────────────────────────────────────
 import faiss
-from rapidfuzz import process
+
+from retrieval import DrugRetrievalEngine
+from response_grounding import (
+    assemble_grounded_response,
+    sanitize_medical_text,
+    strip_hallucinated_drug_content,
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FASTAPI IMPORTS
@@ -454,9 +460,9 @@ def parse_pregnancy_breastfeeding(text: str):
         pregnant = False
     if re.search(r"انا حامل|بنت حامل|حامل في", norm):
         pregnant = True
-    if re.search(r"(لا|مش|مفيش|لأ)\s*(مرضع|ترضع|رضاعة)", norm) or "بضح" not in norm:
+    if re.search(r"(لا|مش|مفيش|لأ)\s*(مرضع|ترضع|رضاع)", norm) or "مش برضع" in norm or "مش مرضع" in norm:
         breastfeeding = False
-    if re.search(r"(مرضع|برضع|باخد رضاعة)", norm):
+    if re.search(r"(مرضع|برضع|بترضع|رضاعة)", norm):
         breastfeeding = True
     return pregnant, breastfeeding
 
@@ -918,6 +924,7 @@ EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME",   "sentence-transformers/paraph
 index:       Optional[faiss.Index]         = None
 embed_model: Optional[Any] = None
 _embed_load_failed: bool = False
+retrieval_engine: Optional[DrugRetrievalEngine] = None
 INGREDIENT_COL = "active_ingredient"
 df = pd.DataFrame()
 
@@ -941,9 +948,9 @@ try:
     print(f"✅ FAISS index loaded — {index.ntotal} vectors")
 
     if ENABLE_SEMANTIC_SEARCH:
-        print("✅ Startup complete — SentenceTransformer loads on first drug search")
+        print("✅ CSV + index ready — hybrid retrieval (semantic loads on first query)")
     else:
-        print("✅ Startup complete — drug lookup via rapidfuzz (semantic search off)")
+        print("✅ CSV + index ready — hybrid retrieval (lexical-only)")
 
 except FileNotFoundError as e:
     print(f"❌ Missing precomputed file: {e}")
@@ -962,8 +969,18 @@ def ingredient_rule_keys(active_ingredient: str) -> list:
 
 def screen_ingredient_safety(active_ingredient: str, ctx: PatientContext):
     ai, reasons = active_ingredient.lower(), []
-    if any(allergy.lower() in ai or ai in allergy.lower() for allergy in ctx.allergies):
-        reasons.append("مستبعد بسبب حساسية مذكورة")
+    ai_tokens = {t for t in re.split(r"[+/\s,\-]+", ai) if len(t) >= 3}
+    for allergy in ctx.allergies:
+        al = allergy.lower().strip()
+        if len(al) < 3:
+            continue
+        if al in ai or ai in al:
+            reasons.append("مستبعد بسبب حساسية مذكورة")
+            break
+        al_tokens = {t for t in re.split(r"[+/\s,\-]+", al) if len(t) >= 3}
+        if ai_tokens & al_tokens:
+            reasons.append("مستبعد بسبب حساسية مذكورة")
+            break
     for key in ingredient_rule_keys(ai):
         rule = INGREDIENT_SAFETY_RULES.get(key, {})
         if "min_age" in rule and ctx.age and ctx.age < rule["min_age"]:
@@ -1033,38 +1050,35 @@ def get_embed_model() -> Optional[Any]:
         return None
 
 
-def semantic_candidate_indices(query_text: str, top_k: int = 40) -> list:
-    """
-    Encode query_text with SentenceTransformer (one short string, ~ms),
-    then search the preloaded FAISS index for the top_k nearest neighbours.
+def _init_retrieval_engine() -> None:
+    global retrieval_engine
+    if retrieval_engine is not None or df.empty:
+        return
+    retrieval_engine = DrugRetrievalEngine(
+        df=df,
+        index=index,
+        ingredient_col=INGREDIENT_COL,
+        get_embed_model=get_embed_model,
+        enable_semantic=ENABLE_SEMANTIC_SEARCH,
+    )
 
-    This is full semantic vector search — identical quality to the original
-    notebook — but with zero startup cost because the index was built offline
-    by build_index.py and loaded from disk at startup.
 
-    Falls back to rapidfuzz text-matching if the FAISS index or model is
-    unavailable (e.g. missing precomputed files).
-    """
-    if df.empty:
-        return []
-
-    # ── Semantic path (preferred) ────────────────────────────────────────────
-    if index is not None and get_embed_model() is not None:
-        try:
-            # Encode only the short query string — NOT the dataset
-            q = get_embed_model().encode([query_text]).astype("float32")
-            faiss.normalize_L2(q)
-            _scores, ids = index.search(q, min(top_k, index.ntotal))
-            return [int(i) for i in ids[0] if i >= 0]
-        except Exception as exc:
-            print(f"⚠️ FAISS search failed ({exc}), falling back to rapidfuzz")
-
-    # ── Fallback: rapidfuzz text matching ────────────────────────────────────
-    try:
-        hits = process.extract(query_text, df[INGREDIENT_COL].tolist(), limit=top_k)
-        return [hit[2] for hit in hits if hit[1] > 0]
-    except Exception:
-        return list(range(min(len(df), top_k)))
+def _drug_row_filter(row: dict, row_index: int, _query: str, ctx: PatientContext) -> Optional[str]:
+    ai = row.get(INGREDIENT_COL, "").strip().lower()
+    name_ar = row.get("name_ar", "")
+    name_en = row.get("name_en", "")
+    if is_baby_drug(name_ar, name_en, ctx.age):
+        return "baby_form"
+    if any(f in name_en.lower() for f in EXCLUDED_FORMS):
+        return "excluded_form"
+    if any(f in name_ar for f in EXCLUDED_FORMS):
+        return "excluded_form"
+    if not is_form_relevant_for_context(name_ar, name_en, ctx):
+        return "form_context"
+    allowed, _ = screen_ingredient_safety(ai, ctx)
+    if not allowed:
+        return "safety"
+    return None
 
 
 def is_baby_drug(name_ar: str, name_en: str, age: Optional[int]) -> bool:
@@ -1077,44 +1091,21 @@ def is_baby_drug(name_ar: str, name_en: str, age: Optional[int]) -> bool:
 def get_matching_drugs_for_ingredient(
     ingredient: str, excluded: set, ctx: PatientContext, max_results: int = 2
 ) -> List[Dict[str, Any]]:
-    if df.empty:
-        return []
-    skip_terms = {"useful for cough", "useful for pain", "علاج", "دواء", "unknown"}
-    if ingredient in skip_terms or len(ingredient) < 4:
+    _init_retrieval_engine()
+    if retrieval_engine is None or retrieval_engine.empty:
         return []
 
-    cand_ids   = semantic_candidate_indices(ingredient, top_k=60)
-    cand_texts = [(idx, df.iloc[idx].get(INGREDIENT_COL, "")) for idx in cand_ids]
-    fuzzy      = process.extract(ingredient, [t[1] for t in cand_texts], limit=30)
+    def row_filter(row: dict, row_index: int, query: str) -> Optional[str]:
+        return _drug_row_filter(row, row_index, query, ctx)
 
-    base_map: Dict[str, list] = {}
-    for hit in fuzzy:
-        pos, score = hit[2], hit[1]
-        if score < 85:
-            continue
-        idx  = cand_texts[pos][0]
-        row  = df.iloc[idx]
-        ai   = row.get(INGREDIENT_COL, "").strip().lower()
-        name_en = row.get("name_en", "")
-        name_ar = row.get("name_ar", "")
-        if is_baby_drug(name_ar, name_en, ctx.age):                              continue
-        if any(f in name_en.lower() for f in EXCLUDED_FORMS):                    continue
-        if any(f in name_ar         for f in EXCLUDED_FORMS):                    continue
-        if any(excl in ai           for excl in excluded):                        continue
-        if not is_form_relevant_for_context(name_ar, name_en, ctx):               continue
-        allowed, _ = screen_ingredient_safety(ai, ctx)
-        if not allowed:                                                            continue
-        base     = re.split(r"[+/\s\-]", ai)[0].strip()
-        row_dict = row.to_dict()
-        row_dict["row_id"]        = idx
-        row_dict["safety_cautions"] = caution_notes_for_context(ai, ctx)
-        base_map.setdefault(base, []).append((score, row_dict))
-
-    if not base_map:
-        return []
-    base  = next(iter(base_map.keys()))
-    items = sorted(base_map[base], key=lambda x: x[0], reverse=True)
-    return [row_dict for _, row_dict in items[:max_results]]
+    return retrieval_engine.match_by_ingredient(
+        ingredient=ingredient,
+        excluded=excluded,
+        row_filter=row_filter,
+        max_results=max_results,
+        caution_fn=caution_notes_for_context,
+        ctx=ctx,
+    )
 
 
 def ingredient_purpose(ingredient: str) -> str:
@@ -1149,6 +1140,7 @@ def row_to_pharmacy_record(row_dict: dict) -> dict:
         price = f"{price} {price_note}"
     return {
         "row": row_dict.get("row_id"),
+        "row_index": row_dict.get("row_index"),
         "name_ar": row_dict.get("name_ar", ""),
         "name_en": row_dict.get("name_en", ""),
         "active_ingredient": str(ai).strip(),
@@ -1158,11 +1150,13 @@ def row_to_pharmacy_record(row_dict: dict) -> dict:
         "dosage": row_dict.get("dosage") or row_dict.get("dosage_clean", ""),
         "dose": row_dict.get("dose", ""),
         "warnings": row_dict.get("safety_cautions") or [],
+        "retrieval_score": row_dict.get("retrieval_score"),
     }
 
 
 def format_drug_block(rec: dict) -> str:
-    lines = [f"💊 **{rec['name_ar'] or rec['name_en']}** `(صف {rec['row']})`"]
+    row_label = rec.get("row")
+    lines = [f"💊 **{rec['name_ar'] or rec['name_en']}** `(صف {row_label})`"]
     if rec.get("name_en") and rec.get("name_ar"):
         lines.append(f"   • الاسم الإنجليزي: {rec['name_en']}")
     lines.append(f"   • المادة الفعالة: {rec['active_ingredient'] or '—'}")
@@ -1179,36 +1173,22 @@ def format_drug_block(rec: dict) -> str:
 
 
 def search_drugs_by_name(name: str, ctx: PatientContext, max_results: int = 5) -> List[Dict[str, Any]]:
-    """Direct lookup by trade name in the Egyptian drugs dataset."""
-    if df.empty or not name or len(name.strip()) < 3:
+    """Hybrid trade-name lookup (lexical + optional semantic rerank)."""
+    _init_retrieval_engine()
+    if retrieval_engine is None or retrieval_engine.empty:
         return []
-    norm_name = normalize_text(name)
-    hits_ar = process.extract(norm_name, df["name_ar"].tolist(), limit=max_results * 2)
-    hits_en = process.extract(norm_name, df["name_en"].tolist(), limit=max_results * 2)
-    seen, results = set(), []
-    for hits in (hits_ar, hits_en):
-        for _, score, idx in hits:
-            if score < 80 or idx in seen:
-                continue
-            row = df.iloc[idx]
-            ai = row.get(INGREDIENT_COL, "").strip().lower()
-            name_ar = row.get("name_ar", "")
-            name_en = row.get("name_en", "")
-            if is_baby_drug(name_ar, name_en, ctx.age):
-                continue
-            if any(f in name_en.lower() for f in EXCLUDED_FORMS):
-                continue
-            allowed, _ = screen_ingredient_safety(ai, ctx)
-            if not allowed:
-                continue
-            seen.add(idx)
-            row_dict = row.to_dict()
-            row_dict["row_id"] = idx
-            row_dict["safety_cautions"] = caution_notes_for_context(ai, ctx)
-            results.append(row_dict)
-            if len(results) >= max_results:
-                return results
-    return results
+
+    def row_filter(row: dict, row_index: int, query: str) -> Optional[str]:
+        return _drug_row_filter(row, row_index, query, ctx)
+
+    return retrieval_engine.match_by_trade_name(
+        name=name,
+        row_filter=row_filter,
+        max_results=max_results,
+        caution_fn=caution_notes_for_context,
+        ctx=ctx,
+        normalize_fn=normalize_text,
+    )
 
 
 def retrieve_drugs_structured(plan: ClinicalPlan, ctx: PatientContext) -> tuple:
@@ -1288,17 +1268,8 @@ def build_patient_summary(ctx: PatientContext) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # ⑨ MAIN RAG FUNCTION
 # ══════════════════════════════════════════════════════════════════════════════
-OVERCONFIDENT_PHRASES = [
-    "متقلقش خالص", "متقلقش", "بسيطة", "حاجة بسيطة", "إن شاء الله حاجة بسيطة",
-    "مفيش حاجة تقلق", "عادي خالص",
-]
-
-
 def sanitize_visible_text(text: str) -> str:
-    out = text or ""
-    for phrase in OVERCONFIDENT_PHRASES:
-        out = out.replace(phrase, "محتاجين نجمع تفاصيل أكتر قبل الحكم")
-    return out
+    return strip_hallucinated_drug_content(sanitize_medical_text(text))
 
 
 def enforce_plan_safety_exclusions(plan: ClinicalPlan, ctx: PatientContext) -> None:
@@ -1429,14 +1400,20 @@ def pharmacy_consult(
             escalation_reason="emergency",
         )
 
-    def _append_dataset_section(text: str) -> str:
-        if not direct_records:
-            return text
-        section = "\n\n---\n📋 **من قاعدة الأدوية المصرية:**\n\n"
-        section += "\n\n".join(format_drug_block(r) for r in direct_records)
-        if section.strip() in text:
-            return text
-        return text + section
+    def _format_dataset_section(records: list) -> str:
+        if not records:
+            return ""
+        return (
+            "\n\n---\n📋 **من قاعدة الأدوية المصرية:**\n\n"
+            + "\n\n".join(format_drug_block(r) for r in records)
+        )
+
+    def _grounded_response(text: str, records: list, extra: str = "") -> str:
+        return assemble_grounded_response(
+            sanitize_visible_text(text + extra),
+            _format_dataset_section(records),
+            records,
+        )
 
     # Medication info — answer from dataset + pharmacist explanation
     if task_type in ("medication_info", "drug_safety_check") and plan.is_conversational:
@@ -1444,7 +1421,7 @@ def pharmacy_consult(
         if plan.non_drug_advice:
             suffix = "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
         return _build_workflow_response(
-            _append_dataset_section(plan.visible_text + suffix),
+            _grounded_response(plan.visible_text, direct_records, suffix),
             plan=plan,
             medications=direct_records,
             warnings=dedupe_keep_order([w for r in direct_records for w in (r.get("warnings") or [])]),
@@ -1458,7 +1435,7 @@ def pharmacy_consult(
             suffix = "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
         status_out = "needs_info" if missing else "completed"
         return _build_workflow_response(
-            _append_dataset_section(plan.visible_text + suffix),
+            _grounded_response(plan.visible_text, direct_records, suffix),
             plan=plan,
             task_status=status_out,
             missing_info=missing,
@@ -1500,9 +1477,17 @@ def pharmacy_consult(
         suffix.append("⚠️ مرض كبد — استخدم بحذر ولا تتجاوز الجرعة الموصى بها.")
         warnings.append(suffix[-1])
 
-    final = plan.visible_text + drug_text
-    if suffix:
-        final += "\n\n" + "\n".join(suffix)
+    if medications:
+        final = assemble_grounded_response(
+            plan.visible_text,
+            drug_text,
+            medications,
+            safety_suffix=suffix or None,
+        )
+    else:
+        final = sanitize_visible_text(plan.visible_text) + (drug_text or "")
+        if suffix:
+            final += "\n\n" + "\n".join(suffix)
 
     return _build_workflow_response(
         final,

@@ -32,6 +32,9 @@ textarea:focus { border-color: #00c89660; }
 #sendBtn:hover { background: #00e6ac; }
 #sendBtn:disabled { background: #2a2d3a; cursor: not-allowed; }
 .err { color: #ff6b6b; font-size: 12px; text-align: center; padding: 6px 0; max-width: 720px; margin: 0 auto; }
+.med-card { align-self: flex-end; max-width: 78%; background: #151820; border: 1px solid #00c89630; border-radius: 10px; padding: 10px 12px; font-size: 12px; line-height: 1.6; }
+.med-card strong { color: #00c896; }
+.med-row { color: #9ca3af; font-size: 11px; margin-top: 4px; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
 @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
@@ -111,6 +114,28 @@ function removeTyping() {
   if (t) t.remove();
 }
 
+function addMedCards(meds) {
+  if (!meds || !meds.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "fadein";
+  wrap.style.display = "flex";
+  wrap.style.flexDirection = "column";
+  wrap.style.gap = "6px";
+  wrap.style.alignSelf = "flex-end";
+  wrap.style.maxWidth = "78%";
+  meds.forEach(m => {
+    const c = document.createElement("div");
+    c.className = "med-card";
+    const name = m.name_ar || m.name_en || "—";
+    c.innerHTML =
+      `<strong>${name}</strong> <span class="med-row">(صف ${m.row})</span>` +
+      `<div class="med-row">${m.active_ingredient || ""} · ${m.price_egp || ""}</div>`;
+    wrap.appendChild(c);
+  });
+  msgsEl.appendChild(wrap);
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+}
+
 async function send() {
   const msg = inp.value.trim();
   if (!msg || loading) return;
@@ -135,6 +160,7 @@ async function send() {
     const data = await res.json();
     removeTyping();
     addBubble(data.response, "bot");
+    addMedCards(data.medications);
     history.push({ role: "user", content: msg });
     history.push({ role: "assistant", content: data.response });
   } catch(e) {
