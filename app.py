@@ -65,9 +65,11 @@ async def chat(req: ChatRequest):
             response="معلش، الطلب أخد وقت طويل — استنى شوية وحاول تاني.",
             task_status="needs_info",
         )
-    except Exception:
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
         return ChatResponse(
-            response="عذراً، حدث خطأ مؤقت — حاول تاني بعد شوية.",
+            response="مش قادر أكمّل الطلب دلوقتي — جرّب تاني أو اسأل عن دواء بالاسم التجاري.",
             task_status="needs_info",
         )
 

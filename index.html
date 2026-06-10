@@ -32,9 +32,17 @@ textarea:focus { border-color: #00c89660; }
 #sendBtn:hover { background: #00e6ac; }
 #sendBtn:disabled { background: #2a2d3a; cursor: not-allowed; }
 .err { color: #ff6b6b; font-size: 12px; text-align: center; padding: 6px 0; max-width: 720px; margin: 0 auto; }
-.med-card { align-self: flex-end; max-width: 78%; background: #151820; border: 1px solid #00c89630; border-radius: 10px; padding: 10px 12px; font-size: 12px; line-height: 1.6; }
-.med-card strong { color: #00c896; }
-.med-row { color: #9ca3af; font-size: 11px; margin-top: 4px; }
+.med-cards-wrap { align-self: flex-end; max-width: 78%; display: flex; flex-direction: column; gap: 8px; }
+.med-card { background: #151820; border: 1px solid #00c89630; border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.65; }
+.med-card-header { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.med-card-header strong { color: #00c896; font-size: 14px; }
+.med-row-id { color: #6b7280; font-size: 11px; }
+.med-field { color: #c5cad6; font-size: 12px; margin: 3px 0; }
+.med-field b { color: #9ca3af; font-weight: 500; }
+.med-expand { margin-top: 8px; background: transparent; border: 1px solid #2a2d3a; border-radius: 6px; color: #00c896; font-size: 11px; padding: 4px 10px; cursor: pointer; font-family: inherit; }
+.med-expand:hover { background: #1e2130; }
+.med-details { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #2a2d3a; font-size: 11px; color: #9ca3af; }
+.med-details.open { display: block; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
 @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
@@ -57,7 +65,7 @@ textarea:focus { border-color: #00c89660; }
   <div class="welcome fadein">
     <div>💊</div>
     <strong>أهلاً بك في صيدلي AI</strong>
-    <p style="margin-top:6px">اسأل عن دواء، جرعة، تفاعلات، أو توصية OTC</p>
+    <p style="margin-top:6px">اسأل عن دواء، سعر، جرعة، بديل...</p>
   </div>
 </div>
 
@@ -114,22 +122,41 @@ function removeTyping() {
   if (t) t.remove();
 }
 
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s || "";
+  return d.innerHTML;
+}
+
 function addMedCards(meds) {
   if (!meds || !meds.length) return;
   const wrap = document.createElement("div");
-  wrap.className = "fadein";
-  wrap.style.display = "flex";
-  wrap.style.flexDirection = "column";
-  wrap.style.gap = "6px";
-  wrap.style.alignSelf = "flex-end";
-  wrap.style.maxWidth = "78%";
+  wrap.className = "med-cards-wrap fadein";
   meds.forEach(m => {
     const c = document.createElement("div");
     c.className = "med-card";
     const name = m.name_ar || m.name_en || "—";
+    const enLine = m.name_en && m.name_ar ? `<div class="med-field"><b>الإنجليزي:</b> ${esc(m.name_en)}</div>` : "";
+    const formLine = m.form || m.dosage
+      ? `<div class="med-field"><b>الشكل:</b> ${esc([m.form, m.dosage].filter(Boolean).join(" · "))}</div>` : "";
+    const usageLine = m.usage ? `<div class="med-field"><b>الاستخدام:</b> ${esc(m.usage)}</div>` : "";
+    const warnLine = (m.warnings && m.warnings.length)
+      ? `<div class="med-field" style="color:#f59e0b"><b>⚠️</b> ${esc(m.warnings.join(" | "))}</div>` : "";
     c.innerHTML =
-      `<strong>${name}</strong> <span class="med-row">(صف ${m.row})</span>` +
-      `<div class="med-row">${m.active_ingredient || ""} · ${m.price_egp || ""}</div>`;
+      `<div class="med-card-header"><strong>💊 ${esc(name)}</strong><span class="med-row-id">(صف ${esc(String(m.row))})</span></div>` +
+      enLine +
+      `<div class="med-field"><b>المادة الفعالة:</b> ${esc(m.active_ingredient || "—")}</div>` +
+      `<div class="med-field"><b>السعر:</b> ${esc(m.price_egp || "—")}</div>` +
+      formLine +
+      usageLine +
+      `<button class="med-expand" type="button">تفاصيل أكثر</button>` +
+      `<div class="med-details">${warnLine}<div class="med-field"><b>الجرعة:</b> ${esc(m.dose || m.dosage || "—")}</div></div>`;
+    const btn = c.querySelector(".med-expand");
+    const det = c.querySelector(".med-details");
+    btn.addEventListener("click", () => {
+      const open = det.classList.toggle("open");
+      btn.textContent = open ? "إخفاء التفاصيل" : "تفاصيل أكثر";
+    });
     wrap.appendChild(c);
   });
   msgsEl.appendChild(wrap);
@@ -175,7 +202,7 @@ async function send() {
 
 function clearChat() {
   history = [];
-  msgsEl.innerHTML = '<div class="welcome fadein"><div>💊</div><strong>أهلاً بك في صيدلي AI</strong><p style="margin-top:6px">اسأل عن دواء، جرعة، تفاعلات، أو توصية OTC</p></div>';
+  msgsEl.innerHTML = '<div class="welcome fadein"><div>💊</div><strong>أهلاً بك في صيدلي AI</strong><p style="margin-top:6px">اسأل عن دواء، سعر، جرعة، بديل...</p></div>';
   errEl.textContent = "";
   newBtn.style.display = "none";
 }
