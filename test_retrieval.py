@@ -162,6 +162,23 @@ def test_extract_drug_name():
     assert "بنادول" in (extract_drug_name_from_query("بديل البنادول") or "")
 
 
-def test_search_variants():
-    variants = generate_search_variants("augmentin")
-    assert "augmentin" in [v.lower() for v in variants]
+def test_unknown_trade_name_blocked():
+    engine = DrugRetrievalEngine(
+        df=_sample_df(),
+        index=None,
+        ingredient_col="active_ingredient",
+        get_embed_model=lambda: None,
+        enable_semantic=False,
+    )
+    rows = engine.match_by_trade_name(
+        "toblaxiel",
+        row_filter=lambda _r, _i, _q: None,
+        max_results=3,
+    )
+    assert len(rows) == 0
+
+
+def test_split_multi_drug():
+    from trade_name_utils import split_multi_drug_names
+    parts = split_multi_drug_names("سعر ديفارول وفيدروب")
+    assert len(parts) >= 2

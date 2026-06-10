@@ -1,3 +1,6 @@
+# trade_name_utils.py — Trade-name query normalization and extraction.
+# Changed: multi-drug split, ambiguous follow-up detection, name variant collection for substitute exclusion.
+
 """
 trade_name_utils.py — Trade-name query normalization and extraction.
 
@@ -71,6 +74,89 @@ SYMPTOM_TREATMENT_MARKERS = [
 ]
 
 SUBSTITUTE_MARKERS = ["بديل", "بدائل", "بدل", "مكان", "substitute", "alternative", "generic for"]
+
+AMBIGUOUS_FOLLOWUP_MARKERS = [
+    "فين", "كمّل", "كمml", "وبعدين", "إيه", "ايه", "تاني", "والنتيجة",
+    "النتيجه", "و بعدين", "فين النتيجة", "فين النتيجه", "more", "continue",
+]
+
+SHOW_MORE_MARKERS = [
+    "اكتر", "أكتر", "more", "زود", "باقي", "الباقي", "نتائج تانية", "نتائج أخرى",
+]
+
+MULTI_DRUG_SPLIT_RE = re.compile(r"\s*\+\s*|\s*,\s*|\s*،\s*|\s*&\s*|\s+و\s+|\s+و(?=\S)|(?<=\S)و\s+")
+
+def collect_name_variants(row: dict) -> Set[str]:
+    """All normalized trade-name tokens for a row (for substitute self-exclusion)."""
+    variants: Set[str] = set()
+    for key in ("name_ar", "name_en"):
+        raw = str(row.get(key, "") or "")
+        norm = strip_form_noise(trade_normalize := normalize_text(raw))
+        if len(norm) >= 2:
+            variants.add(norm)
+            for part in re.split(r"[\(\)/\-]", raw):
+                p = strip_form_noise(normalize_text(part))
+                if len(p) >= 3:
+                    variants.add(p)
+            first = norm.split()[0]
+            if len(first) >= 3:
+                variants.add(first)
+    return variants
+
+
+def is_ambiguous_followup(query: str) -> bool:
+    norm = normalize_text(query)
+    words = norm.split()
+    if len(words) <= 3 and any(m in norm for m in AMBIGUOUS_FOLLOWUP_MARKERS):
+        return True
+    return len(norm) <= 12 and norm in {normalize_text(m) for m in AMBIGUOUS_FOLLOWUP_MARKERS}
+
+
+def is_show_more_request(query: str) -> bool:
+    norm = normalize_text(query)
+    return any(m in norm for m in SHOW_MORE_MARKERS)
+
+
+def split_multi_drug_names(text: str) -> List[str]:
+    """Split multi-drug queries on و / , / + and return cleaned drug name fragments."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    norm = normalize_text(raw)
+    for pattern in DRUG_EXTRACT_PATTERNS:
+        m = re.search(pattern, norm, re.IGNORECASE)
+        if m:
+            raw = m.group(1).strip()
+            norm = normalize_text(raw)
+            break
+    for marker in ("سعر", "بكام", "كام", "بديل", "بدائل", "price"):
+        if marker in norm:
+            parts = re.split(rf"{re.escape(marker)}\s*(?:لـ?|ل)?\s*", norm, maxsplit=1)
+            if len(parts) > 1 and parts[1].strip():
+                norm = parts[1].strip()
+                break
+    norm = re.sub(r"[؟?!.]+$", "", norm).strip()
+    parts = [p.strip() for p in MULTI_DRUG_SPLIT_RE.split(norm) if p.strip()]
+    cleaned: List[str] = []
+    for part in parts:
+        part = re.sub(r"^(?:سعر|بكام|كام|بديل|بدائل|price|substitute)\s*(?:لـ?|ل)?\s*", "", part).strip()
+        if len(part) >= 2:
+            cleaned.append(part)
+    return cleaned if len(cleaned) > 1 else []
+
+
+def resolve_followup_from_history(query: str, history: list) -> Optional[str]:
+    """Reconstruct the last product query when user sends an ambiguous follow-up."""
+    if not is_ambiguous_followup(query):
+        return None
+    for msg in reversed(history or []):
+        if msg.get("role") != "user":
+            continue
+        prev = (msg.get("content") or "").strip()
+        if prev and not is_ambiguous_followup(prev):
+            return prev
+    return None
+
 
 DRUG_EXTRACT_PATTERNS = [
     r"(?:بديل|بدائل|بدل|مكان)\s+(?:لـ?|ل)?\s*(.+)",

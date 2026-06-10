@@ -1,6 +1,10 @@
 """
 rag_logic.py — Egyptian Pharmacy Subagent for ElevenLabs Workflow Orchestration
 ==============================================================================
+Changed: startup data cleaning, LLM query extraction before search, multi-drug
+lookups, conversation follow-up resolution, strict retrieval gates, price/form/usage
+card fixes, substitute strength disambiguation, max 3 cards, removed unsafe fallbacks.
+
 This service is a **pharmacy subagent**, not the primary medical assistant.
 
 Architecture
@@ -39,6 +43,7 @@ Required files next to app.py (generate with build_index.py):
 # ──────────────────────────────────────────────────────────────────────────────
 # STANDARD IMPORTS
 # ──────────────────────────────────────────────────────────────────────────────
+import json
 import os
 import re
 import time
@@ -46,14 +51,15 @@ from threading import Lock
 import requests
 import pandas as pd
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 
 # ──────────────────────────────────────────────────────────────────────────────
 # AI / RAG IMPORTS
 # ──────────────────────────────────────────────────────────────────────────────
 import faiss
 
-from retrieval import DrugRetrievalEngine
+from data_cleaning import clean_dataframe, display_form, is_generic_ingredient
+from retrieval import DrugRetrievalEngine, extract_strengths
 from response_grounding import (
     assemble_grounded_response,
     sanitize_medical_text,
@@ -62,7 +68,11 @@ from response_grounding import (
 from trade_name_utils import (
     classify_query,
     extract_drug_name_from_query,
+    is_ambiguous_followup,
+    is_show_more_request,
+    resolve_followup_from_history,
     resolve_trade_alias,
+    split_multi_drug_names,
     strip_form_noise,
 )
 
@@ -310,6 +320,13 @@ MEDS_CONFIRM_PATTERNS = [
 ]
 
 PRODUCT_INFO_QUERY_TYPES = frozenset({"product_info", "substitute"})
+MAX_DRUG_CARDS = 3
+MAX_DRUG_CARDS_MORE = 3
+DOSAGE_LIKE_RE = re.compile(
+    r"^\s*\d+(?:\.\d+)?\s*(?:mg|mcg|g|gm|ml|iu|iu/ml|%)\s*$|^\s*\d+(?:\.\d+)?\s*$",
+    re.IGNORECASE,
+)
+NOT_FOUND_MSG = "مش لاقي الدواء في قاعدة البيانات — جرّب الاسم التجاري أو اسم المادة الفعالة."
 
 OUT_OF_SCOPE_PATTERNS = {
     "booking": [
@@ -953,19 +970,15 @@ INGREDIENT_COL = "active_ingredient"
 df = pd.DataFrame()
 
 try:
-    # ① Load CSV — pure pandas, instant
+    # ① Load CSV — clean once at startup, cache in memory
     df_raw = pd.read_csv(CSV_PATH).fillna("").astype(str)
-    INGREDIENT_COL = "ingredient_clean" if "ingredient_clean" in df_raw.columns else "active_ingredient"
-    if "combined" not in df_raw.columns:
-        df_raw["combined"] = (
-            df_raw.get("name_ar",      pd.Series([""] * len(df_raw))) + " " +
-            df_raw.get("name_en",      pd.Series([""] * len(df_raw))) + " " +
-            df_raw.get(INGREDIENT_COL, pd.Series([""] * len(df_raw)))
-        )
-    df = df_raw.reset_index(drop=True)
-    del df_raw  # release duplicate DataFrame memory before loading index
+    df, _dataset_meta = clean_dataframe(df_raw)
+    INGREDIENT_COL = _dataset_meta.get("ingredient_col", "ingredient_clean")
+    if INGREDIENT_COL not in df.columns:
+        INGREDIENT_COL = "active_ingredient"
+    del df_raw
     import gc; gc.collect()
-    print(f"✅ CSV loaded — {len(df)} rows")
+    print(f"✅ CSV loaded & cleaned — {len(df)} rows")
 
     # ② Load precomputed FAISS index — faiss.read_index(), no rebuild
     index = faiss.read_index(FAISS_INDEX_PATH)
@@ -1141,12 +1154,24 @@ def ingredient_purpose(ingredient: str) -> str:
 
 
 def _usage_description(row_dict: dict, ai: str) -> str:
-    for key in ("mechanism", "composition", "dosage_clean"):
+    for key in ("mechanism", "composition"):
         val = str(row_dict.get(key, "") or "").strip()
-        if val and val.lower() not in ("nan", "unknown", ""):
+        if val and val.lower() not in ("nan", "unknown", "") and not DOSAGE_LIKE_RE.match(val):
             return val[:200]
     purpose = ingredient_purpose(ai)
     return purpose or ""
+
+
+def _format_price(row_dict: dict) -> str:
+    """Show CSV price as-is; never display estimated/corrected values."""
+    raw = row_dict.get("price_egp_raw") or row_dict.get("price_egp", "")
+    s = str(raw).strip()
+    if not s or s.lower() in ("nan", "none", "0", "0.0"):
+        return "السعر غير متاح"
+    try:
+        return f"{float(s):g} جنيه"
+    except (ValueError, TypeError):
+        return s if s else "السعر غير متاح"
 
 
 def row_to_pharmacy_record(row_dict: dict) -> dict:
@@ -1157,38 +1182,26 @@ def row_to_pharmacy_record(row_dict: dict) -> dict:
         or row_dict.get(INGREDIENT_COL, "")
     )
     ai_str = str(ai).strip()
-    price_val = row_dict.get("price_egp", "")
-    price_note = ""
-    if row_dict.get("price_corrected") in (True, "True", "true", 1):
-        raw = row_dict.get("price_egp_raw")
-        if raw not in (None, "", "nan") and str(raw) != str(price_val):
-            price_note = f"(مُقدَّر — السعر الأصلي في المصدر: {raw})"
-    if price_val and str(price_val).strip() not in ("", "nan"):
-        try:
-            price = f"{float(price_val):g} جنيه"
-        except (ValueError, TypeError):
-            price = str(price_val)
-    else:
-        price = "غير متوفر"
-    if price_note:
-        price = f"{price} {price_note}"
-    form = row_dict.get("form") or row_dict.get("form_clean", "")
-    dosage = row_dict.get("dosage") or row_dict.get("dosage_clean", "")
-    return {
+    form_val = display_form(row_dict)
+    dosage = str(row_dict.get("dosage_clean") or row_dict.get("dosage") or "").strip()
+    if dosage.lower() in ("nan", "unknown", ""):
+        dosage = ""
+    rec = {
         "row": row_dict.get("row_id"),
         "row_index": row_dict.get("row_index"),
         "name_ar": row_dict.get("name_ar", ""),
         "name_en": row_dict.get("name_en", ""),
         "active_ingredient": ai_str,
-        "price_egp": price,
-        "price_estimated": bool(price_note),
-        "form": form,
+        "price_egp": _format_price(row_dict),
         "dosage": dosage,
         "dose": row_dict.get("dose", ""),
         "usage": _usage_description(row_dict, ai_str),
         "warnings": row_dict.get("safety_cautions") or [],
         "retrieval_score": row_dict.get("retrieval_score"),
     }
+    if form_val:
+        rec["form"] = form_val
+    return rec
 
 
 def format_drug_block(rec: dict) -> str:
@@ -1227,7 +1240,7 @@ def _trade_name_row_filter(ctx: PatientContext, relaxed: bool = False):
 def search_drugs_by_name(
     query: str,
     ctx: PatientContext,
-    max_results: int = 5,
+    max_results: int = MAX_DRUG_CARDS,
     relaxed: bool = False,
 ) -> List[Dict[str, Any]]:
     """Multi-stage trade-name lookup with query extraction."""
@@ -1290,35 +1303,215 @@ def pick_primary_product(rows: List[Dict[str, Any]], query: str) -> Optional[Dic
     return max(rows, key=score_row)
 
 
-def search_substitutes(
+def llm_extract_query_entities(query: str) -> dict:
+    """
+    Lightweight pre-search extraction (no conversation history).
+    Returns trade_name, active_ingredient, intent, confidence.
+    """
+    default = {
+        "trade_name": "",
+        "active_ingredient": "",
+        "intent": classify_query(query),
+        "confidence": 0.0,
+    }
+    prompt = (
+        'Extract JSON only: {"trade_name":"","active_ingredient":"","intent":"price|substitute|info|symptom","confidence":0.0}\n'
+        f"Query: {query.strip()[:200]}"
+    )
+    text, status = call_gemini(
+        [{"role": "user", "parts": [{"text": prompt}]}],
+        system_prompt="Return valid JSON only. No markdown.",
+    )
+    if not text or status in ("rate_limit", "gemini_error"):
+        drug = extract_drug_name_from_query(query) or ""
+        if drug:
+            default["trade_name"] = drug
+            default["confidence"] = 0.5
+        return default
+    try:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        parsed = json.loads(m.group(0) if m else text)
+        return {
+            "trade_name": str(parsed.get("trade_name", "") or "").strip(),
+            "active_ingredient": str(parsed.get("active_ingredient", "") or "").strip().lower(),
+            "intent": str(parsed.get("intent", default["intent"]) or default["intent"]).strip(),
+            "confidence": float(parsed.get("confidence", 0) or 0),
+        }
+    except (json.JSONDecodeError, ValueError, TypeError):
+        drug = extract_drug_name_from_query(query) or ""
+        if drug:
+            default["trade_name"] = drug
+            default["confidence"] = 0.4
+        return default
+
+
+def _search_offset_from_history(history: list) -> int:
+    """How many results were already shown for a show-more follow-up."""
+    if not history:
+        return 0
+    last_user = next((m for m in reversed(history) if m.get("role") == "user"), None)
+    if last_user and is_show_more_request(last_user.get("content", "")):
+        return MAX_DRUG_CARDS
+    return 0
+
+
+def _lookup_single_drug(
+    drug_query: str,
+    ctx: PatientContext,
+    entities: dict,
+    max_results: int = MAX_DRUG_CARDS,
+    offset: int = 0,
+    query_type: str = "product_info",
+) -> List[Dict[str, Any]]:
+    """Independent lookup for one drug name with LLM-assisted ingredient fallback."""
+    _init_retrieval_engine()
+    if retrieval_engine is None or retrieval_engine.empty:
+        return []
+
+    trade = entities.get("trade_name") or extract_drug_name_from_query(drug_query) or drug_query
+    rows = search_drugs_by_name(trade, ctx, max_results=max_results + offset + 2, relaxed=False)
+    if not rows and entities.get("active_ingredient"):
+        rows = get_matching_drugs_for_ingredient(
+            entities["active_ingredient"], set(), ctx, max_results=max_results + offset + 2
+        )
+    if not rows and entities.get("confidence", 0) >= 0.35:
+        enriched = llm_extract_query_entities(trade)
+        if enriched.get("active_ingredient"):
+            rows = get_matching_drugs_for_ingredient(
+                enriched["active_ingredient"], set(), ctx, max_results=max_results + offset + 2
+            )
+    if offset:
+        rows = rows[offset:]
+    return [row_to_pharmacy_record(r) for r in rows[:max_results]]
+
+
+def _source_strength_variants(drug_name: str, ctx: PatientContext) -> Set[str]:
+    rows = search_drugs_by_name(drug_name, ctx, max_results=12, relaxed=True)
+    strengths: Set[str] = set()
+    for row in rows:
+        text = " ".join(str(row.get(k, "") or "") for k in (INGREDIENT_COL, "dosage_clean", "name_en"))
+        strengths |= extract_strengths(text)
+    return {s for s in strengths if s}
+
+
+def search_product_queries(
     query: str,
     ctx: PatientContext,
-    max_results: int = 5,
+    query_type: str,
+    history: list,
 ) -> tuple:
-    """Return (source_records, substitute_records) from database only."""
-    source_rows = search_drugs_by_name(query, ctx, max_results=8, relaxed=True)
-    primary = pick_primary_product(source_rows, query)
-    if not primary:
-        return [], []
-    source_rows = [primary]
+    """
+    Unified product/substitute search.
+    Returns (medications, source_records, response_text_or_none, needs_clarification).
+    """
+    resolved = resolve_followup_from_history(query, history)
+    effective_query = resolved or query
+    offset = _search_offset_from_history(history) if is_show_more_request(query) else 0
+    max_results = MAX_DRUG_CARDS_MORE if offset else MAX_DRUG_CARDS
 
+    multi_names = split_multi_drug_names(effective_query)
+    entities = llm_extract_query_entities(effective_query)
+
+    if not multi_names:
+        trade = entities.get("trade_name") or extract_drug_name_from_query(effective_query)
+        if not trade and entities.get("confidence", 0) < 0.35:
+            if is_ambiguous_followup(query) and not resolved:
+                return [], [], "ممكن تقول اسم الدواء اللي بتسأل عنه؟", True
+            if not trade and not entities.get("active_ingredient"):
+                return [], [], "ممكن تقول اسم الدواء أو المادة الفعالة اللي بتدور عليها؟", True
+
+    if query_type == "substitute":
+        drug_name = entities.get("trade_name") or extract_drug_name_from_query(effective_query) or effective_query
+        strengths = _source_strength_variants(drug_name, ctx)
+        strength_in_query = extract_strengths(effective_query)
+        if len(strengths) > 1 and not strength_in_query and not offset:
+            opts = ", ".join(sorted(strengths)[:6])
+            return [], [], f"الدواء متوفر بتركيزات مختلفة ({opts}) — محتاج أنهي تركيز؟", True
+        source_records, sub_records = search_substitutes(
+            effective_query, ctx, max_results=max_results, offset=offset
+        )
+        if not source_records and entities.get("active_ingredient"):
+            ing_rows = get_matching_drugs_for_ingredient(
+                entities["active_ingredient"], set(), ctx, max_results=1
+            )
+            if ing_rows:
+                if is_generic_ingredient(ing_rows[0].get(INGREDIENT_COL, "")):
+                    return [], [], "مش قادر أحدد المادة الفعالة بدقة — ممكن تقول اسم الدواء أو التركيز؟", True
+                source_records, sub_records = search_substitutes_from_row(
+                    ing_rows[0], ctx, max_results=max_results, offset=offset
+                )
+        if not source_records:
+            if entities.get("confidence", 0) < 0.35 and not entities.get("active_ingredient"):
+                return [], [], "ممكن تقول اسم الدواء اللي عايز بديل ليه؟", True
+            return [], [], NOT_FOUND_MSG, False
+        if not sub_records:
+            src_name = source_records[0].get("name_ar") or source_records[0].get("name_en", "")
+            return [], source_records, f"مفيش بدائل تانية بنفس المادة والشكل لـ {src_name} في الداتاسيت.", False
+        return sub_records, source_records, None, False
+
+    # Multi-drug price/info queries
+    if multi_names:
+        all_meds: List[Dict[str, Any]] = []
+        sections: List[str] = []
+        for name in multi_names:
+            sub_entities = llm_extract_query_entities(name)
+            if not sub_entities.get("trade_name"):
+                sub_entities["trade_name"] = name
+            found = _lookup_single_drug(name, ctx, sub_entities, max_results=max_results, offset=offset)
+            label = name.strip()
+            if found:
+                sections.append(f"**{label}**")
+                all_meds.extend(found)
+            else:
+                sections.append(f"**{label}**: {NOT_FOUND_MSG}")
+        text = "\n".join(sections) if sections else NOT_FOUND_MSG
+        return all_meds, [], text, False
+
+    found = _lookup_single_drug(
+        effective_query, ctx, entities, max_results=max_results, offset=offset, query_type=query_type
+    )
+    if found:
+        return found, [], None, False
+    if entities.get("confidence", 0) < 0.35 and not entities.get("active_ingredient"):
+        return [], [], "ممكن تقول اسم الدواء أو المادة الفعالة اللي بتدور عليها؟", True
+    return [], [], NOT_FOUND_MSG, False
+
+
+def search_substitutes_from_row(
+    source_row: dict,
+    ctx: PatientContext,
+    max_results: int = MAX_DRUG_CARDS,
+    offset: int = 0,
+) -> tuple:
     _init_retrieval_engine()
     if retrieval_engine is None:
-        return [row_to_pharmacy_record(source_rows[0])], []
-
-    source = source_rows[0]
+        return [row_to_pharmacy_record(source_row)], []
     subs = retrieval_engine.find_substitutes(
-        source_row=source,
-        source_index=source.get("row_index", 0),
+        source_row=source_row,
+        source_index=source_row.get("row_index", 0),
         row_filter=_trade_name_row_filter(ctx, relaxed=False),
-        max_results=max_results,
+        max_results=max_results + offset,
         caution_fn=caution_notes_for_context,
         ctx=ctx,
     )
-    return (
-        [row_to_pharmacy_record(source)],
-        [row_to_pharmacy_record(r) for r in subs],
-    )
+    if offset:
+        subs = subs[offset:]
+    subs = subs[:max_results]
+    return [row_to_pharmacy_record(source_row)], [row_to_pharmacy_record(r) for r in subs]
+
+
+def search_substitutes(
+    query: str,
+    ctx: PatientContext,
+    max_results: int = MAX_DRUG_CARDS,
+    offset: int = 0,
+) -> tuple:
+    """Return (source_records, substitute_records) from database only."""
+    source_rows = search_drugs_by_name(query, ctx, max_results=8, relaxed=False)
+    primary = pick_primary_product(source_rows, query)
+    if not primary:
+        return [], []
+    return search_substitutes_from_row(primary, ctx, max_results=max_results, offset=offset)
 
 
 def retrieve_drugs_structured(plan: ClinicalPlan, ctx: PatientContext) -> tuple:
@@ -1333,7 +1526,7 @@ def retrieve_drugs_structured(plan: ClinicalPlan, ctx: PatientContext) -> tuple:
     for ing in plan.ingredients[:3]:
         if ing in seen_ingredients:
             continue
-        rows = get_matching_drugs_for_ingredient(ing, excluded, ctx, max_results=3)
+        rows = get_matching_drugs_for_ingredient(ing, excluded, ctx, max_results=MAX_DRUG_CARDS)
         if rows:
             found_any = True
             seen_ingredients.add(ing)
@@ -1441,10 +1634,14 @@ def _guidance_suffix(plan: ClinicalPlan) -> str:
     return "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
 
 
+def _response_text_early(text: str, records: list) -> str:
+    return assemble_grounded_response(sanitize_visible_text(text), "", records, cards_only=True)
+
+
 def _fallback_product_response(query: str, query_type: str, medications: list, source_name: str = "") -> str:
     if not medications:
         drug_q = extract_drug_name_from_query(query) or ""
-        return f"مش لاقي '{drug_q or 'الدواء'}' في قاعدة البيانات — تأكد من الاسم التجاري أو اكتبه بالإنجليزي."
+        return NOT_FOUND_MSG if not drug_q else f"{NOT_FOUND_MSG} ({drug_q})"
     if query_type == "substitute":
         return f"دي بدائل متاحة من قاعدة البيانات لـ {source_name or 'الدواء'} — نفس المادة الفعالة والشكل."
     return "دي البيانات المتاحة من قاعدة الأدوية المصرية."
@@ -1483,14 +1680,27 @@ def pharmacy_consult(
     medications: list = []
     direct_records: list = []
     source_records: list = []
+    prebuilt_text: Optional[str] = None
 
-    if query_type == "substitute":
-        source_records, sub_records = search_substitutes(query, ctx, max_results=5)
-        medications = sub_records
-        direct_records = source_records + sub_records
+    if is_product_query:
+        medications, source_records, prebuilt_text, needs_clarify = search_product_queries(
+            query, ctx, query_type, history
+        )
+        if needs_clarify:
+            return _build_workflow_response(
+                prebuilt_text or "ممكن توضّح اسم الدواء؟",
+                task_status="needs_info",
+                missing_info=[prebuilt_text] if prebuilt_text else [],
+            )
+        direct_records = medications + source_records
+        if prebuilt_text and not medications:
+            return _build_workflow_response(
+                _response_text_early(prebuilt_text, medications),
+                medications=medications,
+                task_status="completed",
+            )
     else:
-        relaxed = is_product_query
-        direct_rows = search_drugs_by_name(query, ctx, max_results=5 if is_product_query else 3, relaxed=relaxed)
+        direct_rows = search_drugs_by_name(query, ctx, max_results=MAX_DRUG_CARDS, relaxed=False)
         direct_records = [row_to_pharmacy_record(r) for r in direct_rows]
         medications = direct_records
 
@@ -1529,8 +1739,10 @@ def pharmacy_consult(
     if status == "rate_limit":
         if medications:
             src = source_records[0]["name_ar"] if source_records else ""
-            text = _fallback_product_response(query, query_type, medications, src)
+            text = prebuilt_text or _fallback_product_response(query, query_type, medications, src)
             return _build_workflow_response(text, medications=medications, task_status="completed")
+        if prebuilt_text:
+            return _build_workflow_response(prebuilt_text, task_status="completed" if medications else "needs_info", medications=medications)
         return WorkflowResponse(
             response="معلش، النظام مشغول دلوقتي — استنى شوية.",
             task_status="needs_info",
@@ -1539,8 +1751,10 @@ def pharmacy_consult(
     if not llm_response:
         if medications:
             src = (source_records[0].get("name_ar") or source_records[0].get("name_en", "")) if source_records else ""
-            text = _fallback_product_response(query, query_type, medications, src)
+            text = prebuilt_text or _fallback_product_response(query, query_type, medications, src)
             return _build_workflow_response(text, medications=medications, task_status="completed")
+        if prebuilt_text:
+            return _build_workflow_response(prebuilt_text, medications=medications, task_status="completed")
         return WorkflowResponse(
             response="مش قادر أجيب إجابة دلوقتي — جرّب تاني بعد شوية.",
             task_status="needs_info",
@@ -1575,15 +1789,17 @@ def pharmacy_consult(
         )
 
     # Product / substitute queries — database-driven, no safety triage
-    if is_product_query:
-        guidance = plan.visible_text or _fallback_product_response(
+    if is_product_query or query_type == "substitute":
+        guidance = plan.visible_text or prebuilt_text or _fallback_product_response(
             query,
             query_type,
             medications,
             (source_records[0].get("name_ar") or "") if source_records else "",
         )
-        if query_type == "substitute" and not medications and source_records:
+        if query_type == "substitute" and not medications and source_records and not prebuilt_text:
             guidance += "\n\n⚠️ مفيش بدائل تانية بنفس المادة والشكل في الداتاسيت."
+        if not medications and not source_records and prebuilt_text:
+            guidance = prebuilt_text
         return _build_workflow_response(
             _response_text(guidance, medications, _guidance_suffix(plan)),
             plan=plan,

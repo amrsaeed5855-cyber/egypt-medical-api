@@ -1,3 +1,7 @@
+# retrieval.py — Hybrid drug retrieval, reranking, and relevance filtering.
+# Changed: stricter trade-name gates (tuned threshold), substitute alias exclusion,
+# generic-ingredient row skip, and known-brand vs unknown-query matching rules.
+
 """
 retrieval.py — Hybrid drug retrieval, reranking, and relevance filtering.
 
@@ -18,7 +22,16 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import faiss
 from rapidfuzz import fuzz, process
 
+from data_cleaning import (
+    INGREDIENT_ALIAS_MAP,
+    SUBSTITUTE_ELIGIBLE,
+    TUNED_MIN_TRADE_RERANK,
+    is_generic_ingredient,
+    is_known_brand_query,
+    normalize_ingredient_canonical,
+)
 from trade_name_utils import (
+    collect_name_variants,
     generate_search_variants,
     normalize_text as trade_normalize,
     resolve_trade_alias,
@@ -32,26 +45,7 @@ MIN_RERANK_SCORE = float(__import__("os").getenv("MIN_RERANK_SCORE", "0.40"))
 MIN_TRADE_NAME_SCORE = float(__import__("os").getenv("MIN_TRADE_NAME_SCORE", "72"))
 HYBRID_CANDIDATE_POOL = int(__import__("os").getenv("HYBRID_CANDIDATE_POOL", "80"))
 
-INGREDIENT_SYNONYMS: Dict[str, str] = {
-    "acetaminophen": "paracetamol",
-    "apap": "paracetamol",
-    "panadol": "paracetamol",
-    "ibuprofen": "ibuprofen",
-    "brufen": "ibuprofen",
-    "advil": "ibuprofen",
-    "cetirizine": "cetirizine",
-    "zyrtec": "cetirizine",
-    "loratadine": "loratadine",
-    "claritin": "loratadine",
-    "omeprazole": "omeprazole",
-    "losec": "omeprazole",
-    "amoxicillin": "amoxicillin",
-    "augmentin": "amoxicillin clavulanic",
-    "pseudo ephedrine": "pseudoephedrine",
-    "phenyl ephedrine": "phenylephrine",
-    "vitamin c": "ascorbic acid",
-    "ascorbic": "ascorbic acid",
-}
+INGREDIENT_SYNONYMS: Dict[str, str] = INGREDIENT_ALIAS_MAP
 
 PREFERRED_FORM_KEYWORDS = (
     "tablet", "tab", "cap", "capsule", "syrup", "suspension", "sachet",
@@ -92,7 +86,8 @@ RowFilter = Callable[[dict, int, str], Optional[str]]
 def normalize_ingredient_query(raw: str) -> str:
     q = (raw or "").strip().lower()
     q = re.sub(r"\s+", " ", q)
-    return INGREDIENT_SYNONYMS.get(q, q)
+    mapped = INGREDIENT_SYNONYMS.get(q, q)
+    return normalize_ingredient_canonical(mapped) if mapped else mapped
 
 
 def ingredient_tokens(ingredient: str) -> Set[str]:
@@ -508,6 +503,7 @@ class DrugRetrievalEngine:
         mode: str = "ingredient",
         query: str = "",
         variants: Optional[List[str]] = None,
+        strict_unknown: bool = False,
     ) -> bool:
         if "exact_name" in cand.match_sources:
             return True
@@ -518,15 +514,20 @@ class DrugRetrievalEngine:
             if not ingredient_matches_query(ai, query) and cand.lexical < 0.82 and cand.semantic < 0.45:
                 return False
         if mode == "trade_name":
-            if cand.name_lexical < (MIN_TRADE_NAME_SCORE / 100.0) and cand.exact_bonus == 0:
-                return False
+            min_rerank = TUNED_MIN_TRADE_RERANK if TUNED_MIN_TRADE_RERANK else MIN_RERANK_SCORE
+            if strict_unknown or not is_known_brand_query(query):
+                # Unknown drug names must not pass on partial fuzzy alone
+                if cand.rerank < min_rerank:
+                    return False
+                if cand.name_lexical < 0.88 and cand.exact_bonus == 0:
+                    return False
+            else:
+                if cand.name_lexical < (MIN_TRADE_NAME_SCORE / 100.0) and cand.exact_bonus == 0:
+                    return False
+                if cand.rerank < min_rerank * 0.72:
+                    return False
             if variants:
-                brand_tokens = []
-                for v in variants:
-                    token = strip_form_noise(resolve_trade_alias(v)).split()[0]
-                    if len(token) >= 4:
-                        brand_tokens.append(token)
-                if brand_tokens and not self._name_matches_query(cand.row, variants):
+                if not self._name_matches_query(cand.row, variants):
                     return False
         return True
 
@@ -550,7 +551,7 @@ class DrugRetrievalEngine:
         seen_bases: Set[str] = set()
 
         for cand in candidates:
-            if not self.passes_relevance_gate(cand, mode="ingredient", query=norm):
+            if not self.passes_relevance_gate(cand, mode="ingredient", query=norm, strict_unknown=True):
                 continue
             ai = cand.row.get(self.ingredient_col, "").strip().lower()
             reject = row_filter(cand.row, cand.row_index, norm)
@@ -598,10 +599,13 @@ class DrugRetrievalEngine:
         results: List[dict] = []
         seen: Set[int] = set()
 
+        strict = not is_known_brand_query(name)
         for cand in candidates:
             if cand.row_index in seen:
                 continue
-            if not self.passes_relevance_gate(cand, mode="trade_name", query=name, variants=variants):
+            if not self.passes_relevance_gate(
+                cand, mode="trade_name", query=name, variants=variants, strict_unknown=strict
+            ):
                 continue
             if not relaxed_filter:
                 reject = row_filter(cand.row, cand.row_index, name)
@@ -646,6 +650,10 @@ class DrugRetrievalEngine:
         src_strengths = extract_strengths(
             " ".join(str(source_row.get(k, "") or "") for k in (self.ingredient_col, "dosage", "dosage_clean", "name_en"))
         )
+        if is_generic_ingredient(src_ing):
+            return []
+
+        src_name_variants = collect_name_variants(source_row)
         src_name_en = trade_normalize(source_row.get("name_en", ""))
         src_brand_token = src_name_en.split()[0] if src_name_en else ""
 
@@ -654,13 +662,21 @@ class DrugRetrievalEngine:
         for idx in range(len(self.df)):
             if idx == source_index:
                 continue
+            if idx < len(SUBSTITUTE_ELIGIBLE) and not SUBSTITUTE_ELIGIBLE[idx]:
+                continue
             row = self.df.iloc[idx].to_dict()
             cand_ing = row.get(self.ingredient_col, "")
+            if is_generic_ingredient(cand_ing):
+                continue
             cand_profile = parse_ingredient_profile(cand_ing)
 
             if not ingredient_profiles_match(src_profile, cand_profile):
                 continue
             if not therapeutic_compatible(src_profile, cand_profile):
+                continue
+
+            cand_variants = collect_name_variants(row)
+            if src_name_variants & cand_variants:
                 continue
 
             reject = row_filter(row, idx, src_ing)

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- index.html — hide Unknown form label on drug cards -->
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
@@ -137,8 +137,10 @@ function addMedCards(meds) {
     c.className = "med-card";
     const name = m.name_ar || m.name_en || "—";
     const enLine = m.name_en && m.name_ar ? `<div class="med-field"><b>الإنجليزي:</b> ${esc(m.name_en)}</div>` : "";
-    const formLine = m.form || m.dosage
-      ? `<div class="med-field"><b>الشكل:</b> ${esc([m.form, m.dosage].filter(Boolean).join(" · "))}</div>` : "";
+    const formLine = m.form && m.form.toLowerCase() !== "unknown"
+      ? `<div class="med-field"><b>الشكل:</b> ${esc(m.form)}${m.dosage ? " · " + esc(m.dosage) : ""}</div>` : (
+        m.dosage ? `<div class="med-field"><b>التركيز:</b> ${esc(m.dosage)}</div>` : ""
+      );
     const usageLine = m.usage ? `<div class="med-field"><b>الاستخدام:</b> ${esc(m.usage)}</div>` : "";
     const warnLine = (m.warnings && m.warnings.length)
       ? `<div class="med-field" style="color:#f59e0b"><b>⚠️</b> ${esc(m.warnings.join(" | "))}</div>` : "";
