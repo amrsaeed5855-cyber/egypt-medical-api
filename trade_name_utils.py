@@ -48,6 +48,13 @@ TRADE_NAME_ALIASES: dict[str, str] = {
     "claritin": "claritin",
     "زيرتك": "zyrtec",
     "zyrtec": "zyrtec",
+    "سيتال": "cetal",
+    "cetal": "cetal",
+    "اتور": "ator",
+    "ator": "ator",
+    "dexa": "dexa",
+    "ديكسا": "dexa",
+    "dexamethasone": "dexamethasone",
 }
 
 # Tokens stripped for secondary fuzzy pass (dosage/form noise)
@@ -109,7 +116,11 @@ def is_ambiguous_followup(query: str) -> bool:
     words = norm.split()
     if len(words) <= 3 and any(m in norm for m in AMBIGUOUS_FOLLOWUP_MARKERS):
         return True
-    return len(norm) <= 12 and norm in {normalize_text(m) for m in AMBIGUOUS_FOLLOWUP_MARKERS}
+    if len(norm) <= 12 and norm in {normalize_text(m) for m in AMBIGUOUS_FOLLOWUP_MARKERS}:
+        return True
+    from medication_context import REFINEMENT_RE
+
+    return bool(REFINEMENT_RE.match(norm))
 
 
 def is_show_more_request(query: str) -> bool:
@@ -147,6 +158,11 @@ def split_multi_drug_names(text: str) -> List[str]:
 
 def resolve_followup_from_history(query: str, history: list) -> Optional[str]:
     """Reconstruct the last product query when user sends an ambiguous follow-up."""
+    from medication_context import extract_medication_context_from_history, is_refinement_followup, merge_refinement_with_context
+
+    prior = extract_medication_context_from_history(history)
+    if is_refinement_followup(query, prior):
+        return merge_refinement_with_context(prior, query)
     if not is_ambiguous_followup(query):
         return None
     for msg in reversed(history or []):
@@ -160,12 +176,24 @@ def resolve_followup_from_history(query: str, history: list) -> Optional[str]:
 
 DRUG_EXTRACT_PATTERNS = [
     r"(?:بديل|بدائل|بدل|مكان)\s+(?:لـ?|ل)?\s*(.+)",
+    r"(?:سعر|بكام|كام)\s+دواء\s+(.+)",
     r"(?:سعر|بكام|كام)\s+(?:لـ?|ل)?\s*(.+)",
     r"(?:alternative|substitute|generic)\s+(?:for|of)?\s*(.+)",
     r"(?:ما هو|ايه|إيه|what is)\s+(?:دواء\s+)?(.+)",
     r"(?:المادة الفعالة|active ingredient)\s+(?:لـ?|ل|of)?\s*(.+)",
     r"(?:تفاصيل|details|info)\s+(?:عن|about|of)?\s*(.+)",
 ]
+
+
+DRUG_NOISE_PREFIXES = ("دواء", "دوا", "medicine", "drug")
+
+
+def _strip_drug_noise(name: str) -> str:
+    norm = normalize_text(name or "")
+    for prefix in DRUG_NOISE_PREFIXES:
+        if norm.startswith(prefix + " "):
+            norm = norm[len(prefix) + 1 :].strip()
+    return norm
 
 
 def normalize_text(text: str) -> str:
@@ -242,6 +270,7 @@ def extract_drug_name_from_query(query: str) -> Optional[str]:
         if m:
             candidate = m.group(1).strip()
             candidate = re.sub(r"[؟?!.،,]+$", "", candidate).strip()
+            candidate = _strip_drug_noise(candidate)
             if len(candidate) >= 2:
                 return candidate
 
@@ -249,7 +278,7 @@ def extract_drug_name_from_query(query: str) -> Optional[str]:
         if marker in norm:
             parts = re.split(rf"{re.escape(marker)}\s*(?:لـ?|ل)?", norm, maxsplit=1)
             if len(parts) > 1 and parts[1].strip():
-                return parts[1].strip()
+                return _strip_drug_noise(parts[1].strip())
 
     # Short queries that look like a drug name only
     if len(norm) <= 40 and not any(m in norm for m in SYMPTOM_TREATMENT_MARKERS):
@@ -257,7 +286,9 @@ def extract_drug_name_from_query(query: str) -> Optional[str]:
             return None
         words = norm.split()
         if 1 <= len(words) <= 5:
-            return norm
+            if len(words) == 1 and words[0].isdigit():
+                return None
+            return _strip_drug_noise(norm)
 
     return None
 

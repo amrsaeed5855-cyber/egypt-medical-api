@@ -47,6 +47,11 @@ HYBRID_CANDIDATE_POOL = int(__import__("os").getenv("HYBRID_CANDIDATE_POOL", "80
 
 INGREDIENT_SYNONYMS: Dict[str, str] = INGREDIENT_ALIAS_MAP
 
+CONFUSABLE_TRADE_PREFIXES: Dict[str, Tuple[str, ...]] = {
+    "cetal": ("citalo", "citalopram", "cital"),
+    "citalo": ("cetal",),
+}
+
 PREFERRED_FORM_KEYWORDS = (
     "tablet", "tab", "cap", "capsule", "syrup", "suspension", "sachet",
     "قرص", "كبسول", "شراب", "اكياس",
@@ -116,6 +121,8 @@ def extract_form_key(row: dict) -> str:
     form = " ".join(
         str(row.get(k, "") or "") for k in ("form", "form_clean", "name_en", "name_ar", "dosage_clean")
     ).lower()
+    if re.search(r"ampoule|ampule|\bamp\b|\bamps\b|injection|حقن|امبول|vial|\bi\.?v\b", form):
+        return "injection"
     if any(k in form for k in ("cream", "gel", "كريم", "مرهم")):
         return "topical"
     if any(k in form for k in ("syrup", "suspension", "شراب", "معلق")):
@@ -126,8 +133,6 @@ def extract_form_key(row: dict) -> str:
         return "oral_solid"
     if any(k in form for k in ("drop", "قطرة", "spray", "بخاخ")):
         return "drops_spray"
-    if any(k in form for k in ("injection", "ampoule", "حقن", "امبول")):
-        return "injection"
     return "other"
 
 
@@ -440,28 +445,65 @@ class DrugRetrievalEngine:
         hits = sum(1 for t in tokens if t in ai)
         return hits / len(tokens)
 
+    @staticmethod
+    def _row_strengths(row: dict, ingredient_col: str) -> Set[str]:
+        text = " ".join(
+            str(row.get(k, "") or "")
+            for k in (ingredient_col, "active_ingredient", "dosage_clean", "dosage", "name_en", "name_ar")
+        )
+        return extract_strengths(text)
+
+    @staticmethod
+    def _strength_match_score(query_strengths: Set[str], row_strengths: Set[str]) -> float:
+        if not query_strengths:
+            return 0.0
+        if row_strengths and query_strengths & row_strengths:
+            return 0.55
+        query_nums = {re.match(r"(\d+(?:\.\d+)?)", s).group(1) for s in query_strengths if re.match(r"(\d+(?:\.\d+)?)", s)}
+        row_nums = {re.match(r"(\d+(?:\.\d+)?)", s).group(1) for s in row_strengths if re.match(r"(\d+(?:\.\d+)?)", s)}
+        if query_nums & row_nums:
+            return 0.25
+        return -0.35
+
+    @staticmethod
+    def _form_match_score(requested_form: str, row: dict) -> float:
+        if not requested_form:
+            return 0.0
+        row_form = extract_form_key(row)
+        if row_form == requested_form:
+            return 0.18
+        return -0.50
+
     def rerank_candidates(
         self,
         candidates: List[ScoredCandidate],
         query: str,
         mode: str = "ingredient",
+        requested_form: str = "",
+        query_strengths: Optional[Set[str]] = None,
     ) -> List[ScoredCandidate]:
         norm_query = normalize_ingredient_query(query) if mode == "ingredient" else query
+        strengths = query_strengths if query_strengths is not None else extract_strengths(query)
         reranked: List[ScoredCandidate] = []
 
         for cand in candidates:
             ai = cand.row.get(self.ingredient_col, "")
             overlap = self._ingredient_overlap_score(ai, norm_query) if mode == "ingredient" else 0.0
             exact_bonus = 0.12 if mode == "ingredient" and ingredient_matches_query(ai, norm_query) else 0.0
+            row_strengths = self._row_strengths(cand.row, self.ingredient_col)
+            strength_score = self._strength_match_score(strengths, row_strengths)
+            form_score = self._form_match_score(requested_form, cand.row)
 
             if mode == "trade_name":
                 cand.rerank = (
-                    0.45 * cand.name_lexical
-                    + 0.18 * cand.combined_lexical
-                    + 0.12 * cand.semantic
-                    + 0.08 * cand.lexical
+                    0.30 * cand.name_lexical
+                    + 0.12 * cand.combined_lexical
+                    + 0.08 * cand.semantic
+                    + 0.06 * cand.lexical
                     + cand.exact_bonus
                     + cand.rrf_boost
+                    + strength_score
+                    + form_score
                     + self._form_bonus(cand.row)
                     + self._price_bonus(cand.row)
                 )
@@ -473,6 +515,8 @@ class DrugRetrievalEngine:
                     + 0.14 * cand.name_lexical
                     + 0.10 * overlap
                     + exact_bonus
+                    + strength_score
+                    + form_score
                     + cand.rrf_boost
                     + self._form_bonus(cand.row)
                     + self._price_bonus(cand.row)
@@ -496,6 +540,14 @@ class DrugRetrievalEngine:
             if len(brand) >= 4 and brand in combined:
                 return True
         return False
+
+    def _is_confusable_trade_match(self, row: dict, query: str) -> bool:
+        canonical = resolve_trade_alias(query)
+        blocked = CONFUSABLE_TRADE_PREFIXES.get(canonical, ())
+        if not blocked:
+            return False
+        first = trade_normalize(row.get("name_en", "")).split()[0]
+        return first in blocked
 
     def passes_relevance_gate(
         self,
@@ -585,6 +637,9 @@ class DrugRetrievalEngine:
         ctx: Any = None,
         normalize_fn: Optional[Callable[[str], str]] = None,
         relaxed_filter: bool = False,
+        requested_form: str = "",
+        query_strengths: Optional[Set[str]] = None,
+        require_form: bool = False,
     ) -> List[dict]:
         if self.empty or not name or len(name.strip()) < 2:
             return []
@@ -593,8 +648,15 @@ class DrugRetrievalEngine:
         if normalize_fn:
             variants = list(dict.fromkeys([normalize_fn(v) for v in variants] + variants))
 
+        strengths = query_strengths if query_strengths is not None else extract_strengths(name)
         candidates = self.hybrid_candidates(name, mode="trade_name", variants=variants)
-        candidates = self.rerank_candidates(candidates, name, mode="trade_name")
+        candidates = self.rerank_candidates(
+            candidates,
+            name,
+            mode="trade_name",
+            requested_form=requested_form,
+            query_strengths=strengths,
+        )
 
         results: List[dict] = []
         seen: Set[int] = set()
@@ -603,14 +665,21 @@ class DrugRetrievalEngine:
         for cand in candidates:
             if cand.row_index in seen:
                 continue
+            if require_form and requested_form and extract_form_key(cand.row) != requested_form:
+                continue
             if not self.passes_relevance_gate(
                 cand, mode="trade_name", query=name, variants=variants, strict_unknown=strict
             ):
                 continue
+            if strengths and self._strength_match_score(strengths, self._row_strengths(cand.row, self.ingredient_col)) < 0:
+                if len(results) >= max_results:
+                    continue
             if not relaxed_filter:
                 reject = row_filter(cand.row, cand.row_index, name)
                 if reject:
                     continue
+            if self._is_confusable_trade_match(cand.row, name):
+                continue
 
             ai = cand.row.get(self.ingredient_col, "").strip().lower()
             row_dict = attach_row_metadata(cand.row, cand.row_index)
@@ -622,6 +691,9 @@ class DrugRetrievalEngine:
             seen.add(cand.row_index)
             if len(results) >= max_results:
                 break
+
+        if require_form and requested_form and not results:
+            return []
 
         return results
 
@@ -684,21 +756,38 @@ class DrugRetrievalEngine:
                 continue
 
             cand_form = extract_form_key(row)
-            form_score = 1.0 if cand_form == src_form else (0.5 if cand_form != "other" and src_form != "other" else 0.2)
+            if src_form != "other" and cand_form != src_form:
+                continue
 
             cand_strengths = extract_strengths(
                 " ".join(str(row.get(k, "") or "") for k in (self.ingredient_col, "dosage", "dosage_clean", "name_en"))
             )
+            if src_strengths:
+                if not cand_strengths or not (src_strengths & cand_strengths):
+                    if src_strengths != cand_strengths:
+                        continue
+
+            form_score = 1.0
             strength_score = 1.0 if src_strengths and src_strengths == cand_strengths else (
-                0.7 if src_strengths & cand_strengths else 0.3
+                0.85 if src_strengths & cand_strengths else 0.0
             )
+            if strength_score <= 0:
+                continue
 
             cand_name = trade_normalize(row.get("name_en", ""))
             brand_token = cand_name.split()[0] if cand_name else ""
-            brand_bonus = 0.0 if brand_token == src_brand_token else 0.1
+            brand_bonus = 0.0 if brand_token == src_brand_token else 0.05
+
+            volume_bonus = 0.0
+            src_text = f"{source_row.get('name_en', '')} {source_row.get('name_ar', '')}".lower()
+            cand_text = f"{row.get('name_en', '')} {row.get('name_ar', '')}".lower()
+            src_vols = {f"{v}ml" for v in re.findall(r"(\d+(?:\.\d+)?)\s*ml", src_text, re.IGNORECASE)}
+            cand_vols = {f"{v}ml" for v in re.findall(r"(\d+(?:\.\d+)?)\s*ml", cand_text, re.IGNORECASE)}
+            if src_vols and cand_vols & src_vols:
+                volume_bonus = 0.04
 
             price_bonus = self._price_bonus(row)
-            total = 0.45 * form_score + 0.40 * strength_score + 0.10 * brand_bonus + price_bonus
+            total = 0.50 * strength_score + 0.35 * form_score + 0.10 * brand_bonus + volume_bonus + price_bonus
 
             scored.append((total, idx, row))
 
