@@ -1,0 +1,298 @@
+{
+  "phase": 0,
+  "captured_at": "2026-06-13",
+  "tests": {
+    "test_retrieval_py": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "status": "PASS"
+    }
+  },
+  "environment": {
+    "csv_rows": 26577,
+    "retrieval_engine_ready": false,
+    "faiss_index_loaded": false
+  },
+  "scenarios": [
+    {
+      "id": "1.1a",
+      "description": "Context: ator price",
+      "query": "سعر دواء ator",
+      "query_type": "product_info",
+      "history": [],
+      "response_time_ms": 1626.59,
+      "needs_clarification": false,
+      "response_text": "مش لاقي الدواء في قاعدة البيانات — جرّب الاسم التجاري أو اسم المادة الفعالة.",
+      "medications": [],
+      "source_records": [],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.1b",
+      "description": "Context follow-up: 120 after ator",
+      "query": "120",
+      "query_type": "product_info",
+      "history": [
+        {
+          "role": "user",
+          "content": "سعر دواء ator"
+        }
+      ],
+      "response_time_ms": 1935.4,
+      "needs_clarification": false,
+      "response_text": null,
+      "medications": [
+        {
+          "name_ar": "بي- ويل 120 مل شراب",
+          "name_en": "Be-well 120 Ml Syrup",
+          "active_ingredient": "liquorice-ginger-guava-honey",
+          "form": "شراب",
+          "price_egp": "11.8 جنيه",
+          "row": 11
+        },
+        {
+          "name_ar": "بسترا تك 120مل شراب",
+          "name_en": "Bestra Tec 120ml Syrup",
+          "active_ingredient": "tincture+squil-liquorice+extract-purifie",
+          "form": "شراب",
+          "price_egp": "15.48 جنيه",
+          "row": 165
+        },
+        {
+          "name_ar": "ماي بيبي درنك 120مل شراب",
+          "name_en": "My Baby Drink 120ml Syrup",
+          "active_ingredient": "peppermint-caraway-dill+seed-cinnamon",
+          "form": "شراب",
+          "price_egp": "11.9 جنيه",
+          "row": 179
+        }
+      ],
+      "source_records": [],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.2",
+      "description": "Strength: ator 10 mg",
+      "query": "ator 10 mg",
+      "query_type": "product_info",
+      "history": [],
+      "response_time_ms": 2010.76,
+      "needs_clarification": false,
+      "response_text": null,
+      "medications": [
+        {
+          "name_ar": "ator 10mg 7 tab.",
+          "name_en": "Ator 10mg 7 Tab.",
+          "active_ingredient": "atorvastatin",
+          "form": "أقراص",
+          "price_egp": "29 جنيه",
+          "row": 19296
+        },
+        {
+          "name_ar": "اتور 10 مجم 7 اقراص",
+          "name_en": "Ator 10mg 7/tab",
+          "active_ingredient": "atorvastatin",
+          "form": "أقراص",
+          "price_egp": "29 جنيه",
+          "row": 25229
+        },
+        {
+          "name_ar": "ator 80 mg 10 f.c. tab.",
+          "name_en": "Ator 80 Mg 10 F.c. Tab.",
+          "active_ingredient": "atorvastatin",
+          "form": "أقراص",
+          "price_egp": "67.5 جنيه",
+          "row": 19795
+        }
+      ],
+      "source_records": [],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.3",
+      "description": "Form: injection dexa",
+      "query": "سعر حقن dexa",
+      "query_type": "product_info",
+      "history": [],
+      "response_time_ms": 1353.42,
+      "needs_clarification": false,
+      "response_text": "مش لاقي الدواء في قاعدة البيانات — جرّب الاسم التجاري أو اسم المادة الفعالة.",
+      "medications": [],
+      "source_records": [],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.4a",
+      "description": "Substitute: بديل Panadol",
+      "query": "بديل Panadol",
+      "query_type": "substitute",
+      "history": [],
+      "response_time_ms": 3214.69,
+      "needs_clarification": false,
+      "response_text": null,
+      "medications": [
+        {
+          "name_ar": "paracetamol 500mg 20 tab. b.p.  (adwic)",
+          "name_en": "Paracetamol 500mg 20 Tab. B.p.  (adwic)",
+          "active_ingredient": "paracetamol",
+          "form": "أقراص",
+          "price_egp": "7 جنيه",
+          "row": 3515
+        },
+        {
+          "name_ar": "paracetamol-mup 500mg b.p. 20 tab.",
+          "name_en": "Paracetamol-mup 500mg B.p. 20 Tab.",
+          "active_ingredient": "paracetamol",
+          "form": "أقراص",
+          "price_egp": "8 جنيه",
+          "row": 3523
+        },
+        {
+          "name_ar": "سيتال 500 مجم 20 قرص",
+          "name_en": "Cetal 500 Mg 20 Tab",
+          "active_ingredient": "paracetamol",
+          "form": "أقراص",
+          "price_egp": "8 جنيه",
+          "row": 3530
+        }
+      ],
+      "source_records": [
+        {
+          "name_ar": "بنادول ادفانس 24 اقراص",
+          "name_en": "Panadol Advance 500 Mg 24 Tablets",
+          "active_ingredient": "paracetamol",
+          "form": "أقراص",
+          "price_egp": "31 جنيه",
+          "row": 3802
+        }
+      ],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.4b",
+      "description": "Substitute: بديل Augmentin",
+      "query": "بديل Augmentin",
+      "query_type": "substitute",
+      "history": [],
+      "response_time_ms": 1030.71,
+      "needs_clarification": true,
+      "response_text": "الدواء متوفر بتركيزات مختلفة (1.2g, 125mg, 156mg, 1g, 20ml, 228mg) — محتاج أنهي تركيز؟",
+      "medications": [],
+      "source_records": [],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.4c",
+      "description": "Substitute: بديل Cetal 120ml",
+      "query": "بديل Cetal 120ml",
+      "query_type": "substitute",
+      "history": [],
+      "response_time_ms": 7327.49,
+      "needs_clarification": false,
+      "response_text": null,
+      "medications": [
+        {
+          "name_ar": "تمبورال 250مجم/5مل معلق 60 مل",
+          "name_en": "Temporal 250mg/5ml Susp. 60 Ml",
+          "active_ingredient": "paracetamol",
+          "form": "معلق",
+          "price_egp": "8.5 جنيه",
+          "row": 16645
+        },
+        {
+          "name_ar": "paracetamol-amriya 120mg/5ml 120ml susp.",
+          "name_en": "Paracetamol-amriya 120mg/5ml 120ml Susp.",
+          "active_ingredient": "paracetamol",
+          "form": "معلق",
+          "price_egp": "8.5 جنيه",
+          "row": 3520
+        },
+        {
+          "name_ar": "paramol 120mg/5ml syrup 125ml",
+          "name_en": "Paramol 120mg/5ml Syrup 125ml",
+          "active_ingredient": "paracetamol",
+          "form": "شراب",
+          "price_egp": "12 جنيه",
+          "row": 3661
+        }
+      ],
+      "source_records": [
+        {
+          "name_ar": "cetal 250mg/5ml 60ml susp.",
+          "name_en": "Cetal 250mg/5ml 60ml Susp.",
+          "active_ingredient": "paracetamol",
+          "form": "معلق",
+          "price_egp": "8.5 جنيه",
+          "row": 26413
+        }
+      ],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.5a",
+      "description": "Substitute context: cetal",
+      "query": "بديل سيتال",
+      "query_type": "substitute",
+      "history": [],
+      "response_time_ms": 1260.84,
+      "needs_clarification": true,
+      "response_text": "الدواء متوفر بتركيزات مختلفة (120ml, 15ml, 20mg, 250mg, 40mg, 500mg) — محتاج أنهي تركيز؟",
+      "medications": [],
+      "source_records": [],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    },
+    {
+      "id": "1.5b",
+      "description": "Substitute follow-up: 120 after cetal",
+      "query": "120",
+      "query_type": "product_info",
+      "history": [
+        {
+          "role": "user",
+          "content": "بديل سيتال"
+        }
+      ],
+      "response_time_ms": 1997.68,
+      "needs_clarification": false,
+      "response_text": null,
+      "medications": [
+        {
+          "name_ar": "بي- ويل 120 مل شراب",
+          "name_en": "Be-well 120 Ml Syrup",
+          "active_ingredient": "liquorice-ginger-guava-honey",
+          "form": "شراب",
+          "price_egp": "11.8 جنيه",
+          "row": 11
+        },
+        {
+          "name_ar": "بسترا تك 120مل شراب",
+          "name_en": "Bestra Tec 120ml Syrup",
+          "active_ingredient": "tincture+squil-liquorice+extract-purifie",
+          "form": "شراب",
+          "price_egp": "15.48 جنيه",
+          "row": 165
+        },
+        {
+          "name_ar": "ماي بيبي درنك 120مل شراب",
+          "name_en": "My Baby Drink 120ml Syrup",
+          "active_ingredient": "peppermint-caraway-dill+seed-cinnamon",
+          "form": "شراب",
+          "price_egp": "11.9 جنيه",
+          "row": 179
+        }
+      ],
+      "source_records": [],
+      "resolved_followup": null,
+      "is_ambiguous_followup": false
+    }
+  ]
+}
