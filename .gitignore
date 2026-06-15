@@ -4,3 +4,4 @@ __pycache__/
 *.csv
 *.backup_*
 .backup_*
+eval_reports/

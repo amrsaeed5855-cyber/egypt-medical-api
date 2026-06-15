@@ -1,0 +1,21 @@
+{
+  "cases": [
+    {
+      "source": {
+        "ingredient_tokens": ["paracetamol"],
+        "form_key": "oral_solid",
+        "strengths": ["500mg"],
+        "volume_ml": null,
+        "pack_size": "24"
+      },
+      "assertions": {
+        "max_failures": 0,
+        "forbidden_failure_types": ["wrong_active_ingredient"],
+        "forbidden_ingredient_tokens": ["chlorzoxazone", "caffeine"],
+        "required_form_key": "oral_solid",
+        "required_strength_overlap": ["500mg"]
+      },
+      "origin_failure_types": ["wrong_active_ingredient"]
+    }
+  ]
+}
