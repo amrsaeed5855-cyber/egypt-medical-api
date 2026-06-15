@@ -46,7 +46,7 @@ def main() -> None:
     index = faiss.IndexFlatIP(vectors.shape[1])
     index.add(vectors)
     faiss.write_index(index, FAISS_INDEX_PATH)
-    print(f"✅ Wrote {FAISS_INDEX_PATH} — {index.ntotal} vectors")
+    print(f"Wrote {FAISS_INDEX_PATH} — {index.ntotal} vectors")
 
     # Persist combined column back to CSV if missing (optional)
     if "combined" not in pd.read_csv(CSV_PATH, nrows=1).columns:

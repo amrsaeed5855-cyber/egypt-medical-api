@@ -12,6 +12,7 @@ from trade_name_utils import (
     extract_drug_name_from_query,
     normalize_text,
     resolve_trade_alias,
+    strip_drug_noise,
     strip_form_noise,
 )
 
@@ -34,8 +35,6 @@ FORM_QUERY_RULES = (
     (("قطرة", "drop", "drops", "spray", "بخاخ"), "drops_spray"),
     (("اكياس", "sachet", "sachets"), "sachet"),
 )
-
-DRUG_NOISE_PREFIXES = ("دواء", "دوا", "medicine", "drug", "medication")
 
 NO_APPROPRIATE_RESULT_MSG = "No medically appropriate result found in the database."
 FORM_NOT_FOUND_MSG = (
@@ -69,14 +68,6 @@ class MedicationSearchContext:
             "query_intent": self.query_intent,
             "source_query": self.source_query,
         }
-
-
-def strip_drug_noise(name: str) -> str:
-    norm = normalize_text(name or "")
-    for prefix in DRUG_NOISE_PREFIXES:
-        if norm.startswith(prefix + " "):
-            norm = norm[len(prefix) + 1 :].strip()
-    return norm
 
 
 def extract_requested_form(query: str) -> tuple[str, str]:
@@ -138,23 +129,6 @@ def build_context_from_query(query: str, query_type: str = "") -> MedicationSear
         volume_ml=volume,
         query_intent=intent,
         source_query=query.strip(),
-    )
-
-
-def build_context_from_row(row: dict, source_query: str, query_type: str, ingredient_col: str = "active_ingredient") -> MedicationSearchContext:
-    ing = str(row.get(ingredient_col, "") or row.get("active_ingredient", "") or "")
-    text = " ".join(
-        str(row.get(k, "") or "")
-        for k in (ingredient_col, "active_ingredient", "dosage_clean", "name_en", "name_ar")
-    )
-    return MedicationSearchContext(
-        drug_name=strip_drug_noise(extract_drug_name_from_query(source_query) or source_query),
-        active_ingredient=ing,
-        form_key=extract_form_key(row),
-        strengths=extract_strengths(text),
-        volume_ml=extract_volume_ml(text),
-        query_intent=query_type,
-        source_query=source_query.strip(),
     )
 
 

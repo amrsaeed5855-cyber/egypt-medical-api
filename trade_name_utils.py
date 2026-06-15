@@ -156,24 +156,6 @@ def split_multi_drug_names(text: str) -> List[str]:
     return cleaned if len(cleaned) > 1 else []
 
 
-def resolve_followup_from_history(query: str, history: list) -> Optional[str]:
-    """Reconstruct the last product query when user sends an ambiguous follow-up."""
-    from medication_context import extract_medication_context_from_history, is_refinement_followup, merge_refinement_with_context
-
-    prior = extract_medication_context_from_history(history)
-    if is_refinement_followup(query, prior):
-        return merge_refinement_with_context(prior, query)
-    if not is_ambiguous_followup(query):
-        return None
-    for msg in reversed(history or []):
-        if msg.get("role") != "user":
-            continue
-        prev = (msg.get("content") or "").strip()
-        if prev and not is_ambiguous_followup(prev):
-            return prev
-    return None
-
-
 DRUG_EXTRACT_PATTERNS = [
     r"(?:بديل|بدائل|بدل|مكان)\s+(?:لـ?|ل)?\s*(.+)",
     r"(?:سعر|بكام|كام)\s+دواء\s+(.+)",
@@ -188,7 +170,7 @@ DRUG_EXTRACT_PATTERNS = [
 DRUG_NOISE_PREFIXES = ("دواء", "دوا", "medicine", "drug")
 
 
-def _strip_drug_noise(name: str) -> str:
+def strip_drug_noise(name: str) -> str:
     norm = normalize_text(name or "")
     for prefix in DRUG_NOISE_PREFIXES:
         if norm.startswith(prefix + " "):
@@ -270,7 +252,7 @@ def extract_drug_name_from_query(query: str) -> Optional[str]:
         if m:
             candidate = m.group(1).strip()
             candidate = re.sub(r"[؟?!.،,]+$", "", candidate).strip()
-            candidate = _strip_drug_noise(candidate)
+            candidate = strip_drug_noise(candidate)
             if len(candidate) >= 2:
                 return candidate
 
@@ -278,7 +260,7 @@ def extract_drug_name_from_query(query: str) -> Optional[str]:
         if marker in norm:
             parts = re.split(rf"{re.escape(marker)}\s*(?:لـ?|ل)?", norm, maxsplit=1)
             if len(parts) > 1 and parts[1].strip():
-                return _strip_drug_noise(parts[1].strip())
+                return strip_drug_noise(parts[1].strip())
 
     # Short queries that look like a drug name only
     if len(norm) <= 40 and not any(m in norm for m in SYMPTOM_TREATMENT_MARKERS):
@@ -288,7 +270,7 @@ def extract_drug_name_from_query(query: str) -> Optional[str]:
         if 1 <= len(words) <= 5:
             if len(words) == 1 and words[0].isdigit():
                 return None
-            return _strip_drug_noise(norm)
+            return strip_drug_noise(norm)
 
     return None
 

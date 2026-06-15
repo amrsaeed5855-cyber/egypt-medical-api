@@ -56,18 +56,6 @@ def strip_hallucinated_drug_content(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
-def filter_relevant_medications(medications: List[dict], min_score: float = 0.0) -> List[dict]:
-    """Drop low-confidence medication cards before returning to the user."""
-    if not medications:
-        return []
-    kept = []
-    for med in medications:
-        score = float(med.get("retrieval_score") or med.get("score") or 1.0)
-        if score >= min_score:
-            kept.append(med)
-    return kept
-
-
 def assemble_grounded_response(
     visible_text: str,
     drug_section: str,

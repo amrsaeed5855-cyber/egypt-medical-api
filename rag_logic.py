@@ -64,7 +64,6 @@ from medication_context import (
     FORM_NOT_FOUND_MSG,
     NO_APPROPRIATE_RESULT_MSG,
     MedicationSearchContext,
-    build_context_from_row,
     extract_requested_form,
     ingredient_hint_for_trade,
     resolve_conversation_query,
@@ -82,10 +81,9 @@ from trade_name_utils import (
     extract_drug_name_from_query,
     is_ambiguous_followup,
     is_show_more_request,
-    resolve_followup_from_history,
+    normalize_text,
     resolve_trade_alias,
     split_multi_drug_names,
-    strip_form_noise,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -353,13 +351,11 @@ OUT_OF_SCOPE_PATTERNS = {
         r"تحويل\s*لدكتور", r"عايز\s*دكتور", r"طبيب\s*متخصص",
         r"specialist", r"referral",
     ],
-}
-
-VALID_TASK_TYPES = {
-    "medication_recommendation",
-    "medication_info",
-    "drug_safety_check",
-    "pharmacy_consult",
+    "symptom": [
+        r"دواء ل", r"عاوز دواء", r"عايز دواء", r"علاج", r"للصداع", r"للكحة",
+        r"للحرارة", r"للزكام", r"للألم", r"للام", r"للمغص", r"للاسهال",
+        r"للإسهال", r"medicine for", r"treatment for",
+    ],
 }
 
 LIVER_DETAIL_KEYWORDS = [
@@ -377,13 +373,6 @@ BABY_KEYWORDS = [
     "تسنين", "رضع", "أطفال", "طفل", "رضيع"
 ]
 
-
-def normalize_text(text: str) -> str:
-    text = (text or "").translate(AR_NUMS)
-    text = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
-    text = text.replace("ة", "ه").replace("ى", "ي")
-    text = re.sub(r"\s+", " ", text).strip().lower()
-    return text
 
 
 def dedupe_keep_order(items: list) -> list:
@@ -673,6 +662,7 @@ def out_of_scope_response(reason: str) -> WorkflowResponse:
         "booking": "حجز المواعيد مش من اختصاص الصيدلي — هرجعك للمساعد الرئيسي يحجزلك.",
         "diagnosis": "التشخيص الطبي مش من اختصاص الصيدلي — هرجعك للمساعد الرئيسي يقيّم حالتك.",
         "referral": "التحويل لطبيب مختص محتاج المساعد الرئيسي — هرجعك له دلوقتي.",
+        "symptom": "اقتراح علاج للأعراض مش من نطاق البحث عن الأدوية — هرجعك للمساعد الرئيسي.",
     }
     return WorkflowResponse(
         response=messages.get(reason, "الطلب ده خارج نطاق الصيدلي — هرجعك للمساعد الرئيسي."),
@@ -762,56 +752,6 @@ def subagent_emergency_escalation(ctx: PatientContext) -> Optional[WorkflowRespo
         return_to_orchestrator=True,
         escalation_reason="emergency",
     )
-
-
-def pre_prescription_gate(
-    ctx: PatientContext,
-    plan: ClinicalPlan,
-    query_type: str = "general",
-) -> Optional[list]:
-    """Safety checks before suggesting drugs — skipped for product/substitute queries."""
-    if query_type in PRODUCT_INFO_QUERY_TYPES:
-        return None
-    if plan.is_conversational or not plan.ingredients:
-        return None
-
-    missing = []
-    needs_age = any(
-        ing in (i.lower() for i in plan.ingredients)
-        for ing in ("ibuprofen", "diclofenac", "naproxen", "dextromethorphan", "loperamide")
-    ) or ctx.is_caregiver
-
-    if needs_age and ctx.age is None:
-        missing.append("السن (للجرعة المناسبة)")
-
-    has_nsaids = any(
-        n in ing.lower()
-        for ing in plan.ingredients
-        for n in ("ibuprofen", "diclofenac", "naproxen")
-    )
-    if has_nsaids and not ctx.allergies_asked and not ctx.allergies:
-        missing.append("عندك حساسية من أي دواء؟ (لو لأ قول 'مفيش حساسية')")
-
-    if ctx.sex == "female" and ctx.age and 15 <= ctx.age <= 50 and ctx.pregnant is None:
-        missing.append("حامل أو مرضع؟ (لو ينطبق)")
-
-    if len(missing) > 2:
-        missing = missing[:2]
-
-    return missing or None
-
-
-def filter_llm_missing_info(missing: list, query_type: str, ctx: PatientContext) -> list:
-    """Strip triage questions from LLM output for product queries and males."""
-    if query_type in PRODUCT_INFO_QUERY_TYPES:
-        return []
-    if not missing:
-        return []
-    blocked = ("حامل", "مرضع", "حساسية", "أدوية", "ادوية", "سن", "عمر", "age", "pregnan", "allerg", "meds")
-    if ctx.sex == "male":
-        blocked = blocked + ("حامل", "مرضع", "pregnan", "breast")
-    filtered = [m for m in missing if not any(b in m.lower() for b in blocked)]
-    return filtered[:2]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -989,24 +929,24 @@ try:
         INGREDIENT_COL = "active_ingredient"
     del df_raw
     import gc; gc.collect()
-    print(f"✅ CSV loaded & cleaned — {len(df)} rows")
+    print(f"[OK] CSV loaded & cleaned — {len(df)} rows")
 except Exception as e:
-    print(f"❌ CSV load error: {e}")
+    print(f"[ERR] CSV load error: {e}")
 
 try:
     index = faiss.read_index(FAISS_INDEX_PATH)
-    print(f"✅ FAISS index loaded — {index.ntotal} vectors")
+    print(f"[OK] FAISS index loaded — {index.ntotal} vectors")
 except FileNotFoundError as e:
-    print(f"❌ Missing precomputed file: {e}")
+    print(f"[ERR] Missing precomputed file: {e}")
     print("   Run build_index.py offline to generate faiss.index")
 except Exception as e:
-    print(f"❌ FAISS index load error: {e}")
+    print(f"[ERR] FAISS index load error: {e}")
 
 if not df.empty:
     if ENABLE_SEMANTIC_SEARCH and index is not None:
-        print("✅ CSV + index ready — hybrid retrieval (semantic loads on first query)")
+        print("[OK] CSV + index ready — hybrid retrieval (semantic loads on first query)")
     else:
-        print("✅ CSV ready — hybrid retrieval (lexical-only)")
+        print("[OK] CSV ready — hybrid retrieval (lexical-only)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1217,24 +1157,6 @@ def row_to_pharmacy_record(row_dict: dict) -> dict:
     return rec
 
 
-def format_drug_block(rec: dict) -> str:
-    row_label = rec.get("row")
-    lines = [f"💊 **{rec['name_ar'] or rec['name_en']}** `(صف {row_label})`"]
-    if rec.get("name_en") and rec.get("name_ar"):
-        lines.append(f"   • الاسم الإنجليزي: {rec['name_en']}")
-    lines.append(f"   • المادة الفعالة: {rec['active_ingredient'] or '—'}")
-    lines.append(f"   • السعر: {rec['price_egp']}")
-    if rec.get("form"):
-        lines.append(f"   • الشكل: {rec['form']}")
-    if rec.get("dosage"):
-        lines.append(f"   • التركيز/الجرعة: {rec['dosage']}")
-    if rec.get("dose"):
-        lines.append(f"   • الجرعة: {rec['dose']}")
-    if rec.get("warnings"):
-        lines.append(f"   • ⚠️ { ' | '.join(rec['warnings'])}")
-    return "\n".join(lines)
-
-
 def _trade_name_row_filter(ctx: PatientContext, relaxed: bool = False):
     def row_filter(row: dict, row_index: int, query: str) -> Optional[str]:
         if relaxed:
@@ -1347,9 +1269,6 @@ def search_drugs_by_name(
                 results = exact_matches + [r for r in results if r not in exact_matches]
 
     return results[:max_results]
-
-
-_VARIANT_PENALTY = ("extra", "cold", "flu", "sinus", "joint", "migraine", "baby", "infant", "advance", "actifast")
 
 
 def pick_primary_product(
@@ -1663,51 +1582,6 @@ def search_substitutes(
     return search_substitutes_from_row(primary, ctx, max_results=max_results, offset=offset)
 
 
-def retrieve_drugs_structured(plan: ClinicalPlan, ctx: PatientContext) -> tuple:
-    """Return (formatted_text, medications_list, warnings_list, ingredients_list)."""
-    if not plan.ingredients:
-        return "", [], [], []
-
-    excluded, seen_ingredients, seen_rows = set(plan.excluded_ingredients), set(), set()
-    drug_blocks, medications, warnings, ingredients_out = [], [], [], []
-    found_any = False
-
-    for ing in plan.ingredients[:3]:
-        if ing in seen_ingredients:
-            continue
-        rows = get_matching_drugs_for_ingredient(ing, excluded, ctx, max_results=MAX_DRUG_CARDS)
-        if rows:
-            found_any = True
-            seen_ingredients.add(ing)
-            ingredients_out.append(ing)
-            purpose = ingredient_purpose(ing)
-            if purpose:
-                drug_blocks.append(f"🔹 **{ing.title()}** — {purpose}")
-            else:
-                drug_blocks.append(f"🔹 **{ing.title()}**")
-            for r in rows:
-                rid = r.get("row_id")
-                if rid in seen_rows:
-                    continue
-                seen_rows.add(rid)
-                rec = row_to_pharmacy_record(r)
-                medications.append(rec)
-                warnings.extend(rec.get("warnings") or [])
-                drug_blocks.append(format_drug_block(rec))
-            drug_blocks.append("")
-
-    if not found_any:
-        return (
-            "\n\n⚠️ مفيش أدوية في الداتاسيت مطابقة بعد فلاتر الأمان.",
-            [], dedupe_keep_order(warnings), ingredients_out,
-        )
-
-    result = "\n\n---\n📋 **من قاعدة الأدوية المصرية:**\n\n" + "\n".join(drug_blocks)
-    if plan.non_drug_advice:
-        result += "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
-    return result, medications, dedupe_keep_order(warnings), ingredients_out
-
-
 def build_patient_summary(ctx: PatientContext) -> str:
     def val(v, fallback="غير مذكور"):
         if v is None:
@@ -1737,13 +1611,6 @@ def build_patient_summary(ctx: PatientContext) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 def sanitize_visible_text(text: str) -> str:
     return strip_hallucinated_drug_content(sanitize_medical_text(text))
-
-
-def enforce_plan_safety_exclusions(plan: ClinicalPlan, ctx: PatientContext) -> None:
-    if "hypertension" in ctx.chronic_conditions:
-        blocked = {"phenylephrine", "pseudoephedrine"}
-        plan.ingredients = [i for i in plan.ingredients if i not in blocked and not any(b in i for b in blocked)]
-        plan.excluded_ingredients.update(blocked)
 
 
 def _workflow_from_plan(plan: ClinicalPlan, **overrides) -> dict:
@@ -1817,6 +1684,8 @@ def pharmacy_consult(
     scope_reason = detect_out_of_scope(query)
     if scope_reason:
         return out_of_scope_response(scope_reason)
+    if query_type == "symptom_treatment":
+        return out_of_scope_response("symptom")
 
     ctx = extract_context(query, history)
     ctx = apply_delegation_context(ctx, delegation)
@@ -1852,6 +1721,17 @@ def pharmacy_consult(
         direct_rows = search_drugs_by_name(query, ctx, max_results=MAX_DRUG_CARDS, relaxed=False)
         direct_records = [row_to_pharmacy_record(r) for r in direct_rows]
         medications = direct_records
+        if medications:
+            text = _fallback_product_response(query, "product_info", medications, "")
+            return _build_workflow_response(
+                _response_text_early(text, medications),
+                medications=medications,
+                task_status="completed",
+            )
+        return _build_workflow_response(
+            "ممكن تقول اسم الدواء أو المادة الفعالة اللي بتدور عليها؟",
+            task_status="needs_info",
+        )
 
     dataset_context = ""
     if direct_records:
@@ -1956,80 +1836,6 @@ def pharmacy_consult(
             warnings=dedupe_keep_order([w for r in medications for w in (r.get("warnings") or [])]),
             task_status="completed",
         )
-
-    if task_type in ("medication_info", "drug_safety_check") and plan.is_conversational:
-        return _build_workflow_response(
-            _response_text(plan.visible_text, medications, _guidance_suffix(plan)),
-            plan=plan,
-            medications=medications,
-            warnings=dedupe_keep_order([w for r in medications for w in (r.get("warnings") or [])]),
-        )
-
-    if plan.is_conversational or not plan.ingredients:
-        missing = filter_llm_missing_info(plan.workflow.get("missing_info") or [], query_type, ctx)
-        status_out = "needs_info" if missing else "completed"
-        return _build_workflow_response(
-            _response_text(plan.visible_text, medications, _guidance_suffix(plan)),
-            plan=plan,
-            task_status=status_out,
-            missing_info=missing,
-            medications=medications,
-        )
-
-    missing_safety = pre_prescription_gate(ctx, plan, query_type)
-    if missing_safety:
-        msg = "محتاج معلومة واحدة لسلامة الاقتراح:\n" + "\n".join(f"• {m}" for m in missing_safety)
-        return _build_workflow_response(
-            msg,
-            plan=plan,
-            task_status="needs_info",
-            missing_info=missing_safety,
-        )
-
-    enforce_plan_safety_exclusions(plan, ctx)
-    if not plan.ingredients:
-        return _build_workflow_response(
-            plan.visible_text + "\n\n⚠️ بناءً على الحالة المزمنة، مفيش أدوية OTC آمنة بدون استشارة طبيب.",
-            plan=plan,
-            task_status="escalate",
-            return_to_orchestrator=True,
-            escalation_reason="specialist",
-        )
-
-    drug_text, medications, warnings, ingredients = retrieve_drugs_structured(plan, ctx)
-    suffix = []
-    if "diabetes" in ctx.chronic_conditions or "hypertension" in ctx.chronic_conditions:
-        suffix.append("⚠️ مرض مزمن (سكر/ضغط) — استشر طبيبك قبل الاستمرار.")
-        warnings.append(suffix[-1])
-    if "liver" in ctx.chronic_conditions:
-        suffix.append("⚠️ مرض كبد — استخدم بحذر ولا تتجاوز الجرعة الموصى بها.")
-        warnings.append(suffix[-1])
-
-    final = assemble_grounded_response(
-        plan.visible_text,
-        drug_text,
-        medications,
-        safety_suffix=suffix or None,
-        cards_only=True,
-    )
-    if not medications and drug_text:
-        final = sanitize_visible_text(plan.visible_text) + drug_text
-        if suffix:
-            final += "\n\n" + "\n".join(suffix)
-
-    return _build_workflow_response(
-        final,
-        plan=plan,
-        medications=medications,
-        warnings=dedupe_keep_order(warnings),
-        ingredients=ingredients,
-        task_status="completed",
-    )
-
-
-def rag(query: str, history: list = None, delegation: Optional[dict] = None) -> str:
-    """Backward-compatible text-only wrapper for pharmacy_consult."""
-    return pharmacy_consult(query, history, delegation).response
 
 
 # ── Pydantic request/response schemas (used by app.py) ───────────────────────
