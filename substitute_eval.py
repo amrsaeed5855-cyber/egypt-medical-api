@@ -21,6 +21,7 @@ from retrieval import (
     attach_row_metadata,
     display_row_id,
     extract_form_key,
+    extract_pack_size,
     extract_strengths,
     ingredient_profiles_match,
     parse_ingredient_profile,
@@ -34,13 +35,6 @@ DEFAULT_REPORT_DIR = os.getenv("SUBSTITUTE_EVAL_REPORT_DIR", "eval_reports")
 REGRESSION_CASES_PATH = os.getenv("SUBSTITUTE_REGRESSION_CASES", "eval_regression_cases.json")
 
 STRENGTH_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mg|g|gm|ml|%|mcg|iu)", re.IGNORECASE)
-PACK_SIZE_RE = re.compile(
-    r"\b(\d+)\s*(?:"
-    r"tab|tabs|cap|caps|softgel|softgels|vial|vials|amp|amps|ampoule|ampoules|"
-    r"sachet|sachets|strip|strips|puff|puffs|dose|doses"
-    r")\b",
-    re.IGNORECASE,
-)
 
 FAILURE_WRONG_INGREDIENT = "wrong_active_ingredient"
 FAILURE_WRONG_FORM = "wrong_dosage_form"
@@ -75,12 +69,9 @@ def row_volume_ml(row: dict) -> Optional[str]:
     return extract_volume_ml(text)
 
 
-def extract_pack_size(row: dict) -> Optional[str]:
+def extract_pack_size_from_row(row: dict) -> Optional[str]:
     text = f"{row.get('name_en', '')} {row.get('name_ar', '')}"
-    match = PACK_SIZE_RE.search(text or "")
-    if not match:
-        return None
-    return match.group(1)
+    return extract_pack_size(text)
 
 
 def source_has_test_metadata(row: dict, ingredient_col: str) -> bool:
@@ -120,7 +111,7 @@ def source_fingerprint(row: dict, ingredient_col: str) -> Dict[str, Any]:
         "form_key": extract_form_key(row),
         "strengths": sorted(row_strengths(row, ingredient_col)),
         "volume_ml": row_volume_ml(row),
-        "pack_size": extract_pack_size(row),
+        "pack_size": extract_pack_size_from_row(row),
     }
 
 
@@ -232,8 +223,8 @@ def validate_substitute_candidate(
         details["source_volume_ml"] = src_volume
         details["candidate_volume_ml"] = cand_volume
 
-    src_pack = extract_pack_size(source_row)
-    cand_pack = extract_pack_size(candidate_row)
+    src_pack = extract_pack_size_from_row(source_row)
+    cand_pack = extract_pack_size_from_row(candidate_row)
     if src_pack and cand_pack and src_pack != cand_pack:
         numeric_failures.append("pack_size")
         details["source_pack_size"] = src_pack
@@ -367,7 +358,7 @@ def evaluate_case(
     src_form = extract_form_key(source_row)
     src_strengths = row_strengths(source_row, ingredient_col)
     src_volume = row_volume_ml(source_row)
-    src_pack = extract_pack_size(source_row)
+    src_pack = extract_pack_size_from_row(source_row)
 
     for rank, sub in enumerate(top_k, start=1):
         score = float(sub.get("retrieval_score") or 0.0)
@@ -397,7 +388,7 @@ def evaluate_case(
                 constraint_hits += 1
         if src_pack:
             constraint_checks += 1
-            if extract_pack_size(sub) == src_pack:
+            if extract_pack_size_from_row(sub) == src_pack:
                 constraint_hits += 1
 
         if is_valid:

@@ -69,6 +69,21 @@ DECONGESTANT_MARKERS = {"pseudoephedrine", "phenylephrine", "phenylepherine"}
 CAFFEINE_MARKERS = {"caffeine", "coffeine"}
 
 STRENGTH_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mg|g|gm|ml|%|mcg|iu)", re.IGNORECASE)
+CONCENTRATION_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*mg\s*/\s*(\d+(?:\.\d+)?)\s*ml",
+    re.IGNORECASE,
+)
+VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*ml\b", re.IGNORECASE)
+PACK_SIZE_RE = re.compile(
+    r"\b(\d+)\s*(?:"
+    r"tab|tabs|cap|caps|softgel|softgels|vial|vials|amp|amps|ampoule|ampoules|"
+    r"sachet|sachets|strip|strips|puff|puffs|dose|doses"
+    r")\b|"
+    r"\b(\d+)(?:tab|tabs|cap|caps|softgel|softgels|vial|vials|amp|amps|ampoule|ampoules|"
+    r"sachet|sachets|strip|strips|puff|puffs|dose|doses)\b",
+    re.IGNORECASE,
+)
+_UNIT_TO_MG = {"mg": 1.0, "g": 1000.0, "gm": 1000.0, "mcg": 0.001}
 
 
 @dataclass
@@ -115,6 +130,101 @@ def parse_ingredient_profile(ingredient: str) -> Set[str]:
 
 def extract_strengths(text: str) -> Set[str]:
     return {m.group(0).lower().replace(" ", "") for m in STRENGTH_RE.finditer(text or "")}
+
+
+def extract_dose_strengths(text: str) -> Set[str]:
+    """Strength tokens excluding standalone volume (e.g. 120ml) confused with dose."""
+    strengths = extract_strengths(text)
+    return {s for s in strengths if not re.fullmatch(r"\d+(?:\.\d+)?ml", s.replace(" ", ""))}
+
+
+def extract_concentration(text: str) -> Optional[str]:
+    match = CONCENTRATION_RE.search(text or "")
+    if not match:
+        return None
+    mg = float(match.group(1))
+    ml = float(match.group(2))
+    return f"{mg:g}mg/{ml:g}ml".lower().replace(" ", "")
+
+
+def extract_volume_ml(text: str) -> Optional[str]:
+    match = VOLUME_RE.search(text or "")
+    if not match:
+        return None
+    return f"{float(match.group(1)):g}ml".lower().replace(" ", "")
+
+
+def extract_pack_size(text: str) -> Optional[str]:
+    match = PACK_SIZE_RE.search(text or "")
+    if not match:
+        return None
+    return match.group(1) or match.group(2)
+
+
+def _strength_to_mg(token: str) -> Optional[float]:
+    match = re.match(r"(\d+(?:\.\d+)?)(mg|g|gm|mcg|iu|%)", (token or "").lower().replace(" ", ""))
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2)
+    factor = _UNIT_TO_MG.get(unit)
+    if factor is None:
+        return None
+    return round(value * factor, 4)
+
+
+def strength_mg_values(strengths: Set[str]) -> Set[float]:
+    return {mg for s in strengths if (mg := _strength_to_mg(s)) is not None}
+
+
+def strengths_compatible(source: Set[str], candidate: Set[str]) -> bool:
+    if not source:
+        return True
+    if not candidate:
+        return False
+    if source & candidate:
+        return True
+    src_mg = strength_mg_values(source)
+    cand_mg = strength_mg_values(candidate)
+    if src_mg and cand_mg:
+        return bool(src_mg & cand_mg)
+    return False
+
+
+def row_constraint_text(row: dict, ingredient_col: str) -> str:
+    return " ".join(
+        str(row.get(k, "") or "")
+        for k in (ingredient_col, "active_ingredient", "dosage", "dosage_clean", "name_en", "name_ar")
+    )
+
+
+def row_numeric_constraints(row: dict, ingredient_col: str) -> Dict[str, Any]:
+    text = row_constraint_text(row, ingredient_col)
+    return {
+        "strengths": extract_dose_strengths(text),
+        "concentration": extract_concentration(text),
+        "volume_ml": extract_volume_ml(text),
+        "pack_size": extract_pack_size(text),
+    }
+
+
+def numeric_constraints_compatible(source: dict, candidate: dict, ingredient_col: str) -> bool:
+    src = row_numeric_constraints(source, ingredient_col)
+    cand = row_numeric_constraints(candidate, ingredient_col)
+
+    if src["strengths"] and not strengths_compatible(src["strengths"], cand["strengths"]):
+        return False
+
+    if src["concentration"] and cand["concentration"] and src["concentration"] != cand["concentration"]:
+        return False
+
+    if src["volume_ml"] and cand["volume_ml"] and src["volume_ml"] != cand["volume_ml"]:
+        return False
+
+    if src["pack_size"] and cand["pack_size"] and src["pack_size"] != cand["pack_size"]:
+        return False
+
+    return True
 
 
 def extract_form_key(row: dict) -> str:
@@ -457,10 +567,12 @@ class DrugRetrievalEngine:
     def _strength_match_score(query_strengths: Set[str], row_strengths: Set[str]) -> float:
         if not query_strengths:
             return 0.0
-        if row_strengths and query_strengths & row_strengths:
-            return 0.55
-        query_nums = {re.match(r"(\d+(?:\.\d+)?)", s).group(1) for s in query_strengths if re.match(r"(\d+(?:\.\d+)?)", s)}
-        row_nums = {re.match(r"(\d+(?:\.\d+)?)", s).group(1) for s in row_strengths if re.match(r"(\d+(?:\.\d+)?)", s)}
+        if strengths_compatible(query_strengths, row_strengths):
+            if query_strengths & row_strengths:
+                return 0.55
+            return 0.45
+        query_nums = strength_mg_values(query_strengths)
+        row_nums = strength_mg_values(row_strengths)
         if query_nums & row_nums:
             return 0.25
         return -0.35
@@ -650,6 +762,17 @@ class DrugRetrievalEngine:
 
         strengths = query_strengths if query_strengths is not None else extract_strengths(name)
         candidates = self.hybrid_candidates(name, mode="trade_name", variants=variants)
+        if strengths or requested_form:
+            filtered: List[ScoredCandidate] = []
+            for cand in candidates:
+                if requested_form and extract_form_key(cand.row) != requested_form:
+                    continue
+                row_strengths = self._row_strengths(cand.row, self.ingredient_col)
+                if strengths and not strengths_compatible(strengths, row_strengths):
+                    continue
+                filtered.append(cand)
+            if filtered:
+                candidates = filtered
         candidates = self.rerank_candidates(
             candidates,
             name,
@@ -672,8 +795,7 @@ class DrugRetrievalEngine:
             ):
                 continue
             if strengths and self._strength_match_score(strengths, self._row_strengths(cand.row, self.ingredient_col)) < 0:
-                if len(results) >= max_results:
-                    continue
+                continue
             if not relaxed_filter:
                 reject = row_filter(cand.row, cand.row_index, name)
                 if reject:
@@ -719,9 +841,11 @@ class DrugRetrievalEngine:
             return []
 
         src_form = extract_form_key(source_row)
-        src_strengths = extract_strengths(
-            " ".join(str(source_row.get(k, "") or "") for k in (self.ingredient_col, "dosage", "dosage_clean", "name_en"))
-        )
+        src_constraints = row_numeric_constraints(source_row, self.ingredient_col)
+        src_strengths = src_constraints["strengths"]
+        src_concentration = src_constraints["concentration"]
+        src_volume = src_constraints["volume_ml"]
+        src_pack = src_constraints["pack_size"]
         if is_generic_ingredient(src_ing):
             return []
 
@@ -759,17 +883,23 @@ class DrugRetrievalEngine:
             if src_form != "other" and cand_form != src_form:
                 continue
 
-            cand_strengths = extract_strengths(
-                " ".join(str(row.get(k, "") or "") for k in (self.ingredient_col, "dosage", "dosage_clean", "name_en"))
-            )
-            if src_strengths:
-                if not cand_strengths or not (src_strengths & cand_strengths):
-                    if src_strengths != cand_strengths:
-                        continue
+            cand_constraints = row_numeric_constraints(row, self.ingredient_col)
+            cand_strengths = cand_constraints["strengths"]
+            if src_strengths and not strengths_compatible(src_strengths, cand_strengths):
+                continue
+
+            if src_concentration and cand_constraints["concentration"] and src_concentration != cand_constraints["concentration"]:
+                continue
+
+            if src_volume and cand_constraints["volume_ml"] and src_volume != cand_constraints["volume_ml"]:
+                continue
+
+            if src_pack and cand_constraints["pack_size"] and src_pack != cand_constraints["pack_size"]:
+                continue
 
             form_score = 1.0
             strength_score = 1.0 if src_strengths and src_strengths == cand_strengths else (
-                0.85 if src_strengths & cand_strengths else 0.0
+                0.85 if strengths_compatible(src_strengths, cand_strengths) else 0.0
             )
             if strength_score <= 0:
                 continue
@@ -779,19 +909,39 @@ class DrugRetrievalEngine:
             brand_bonus = 0.0 if brand_token == src_brand_token else 0.05
 
             volume_bonus = 0.0
-            src_text = f"{source_row.get('name_en', '')} {source_row.get('name_ar', '')}".lower()
-            cand_text = f"{row.get('name_en', '')} {row.get('name_ar', '')}".lower()
-            src_vols = {f"{v}ml" for v in re.findall(r"(\d+(?:\.\d+)?)\s*ml", src_text, re.IGNORECASE)}
-            cand_vols = {f"{v}ml" for v in re.findall(r"(\d+(?:\.\d+)?)\s*ml", cand_text, re.IGNORECASE)}
-            if src_vols and cand_vols & src_vols:
+            if src_volume and cand_constraints["volume_ml"] == src_volume:
                 volume_bonus = 0.04
 
+            pack_bonus = 0.0
+            if src_pack and cand_constraints["pack_size"] == src_pack:
+                pack_bonus = 0.03
+
             price_bonus = self._price_bonus(row)
-            total = 0.50 * strength_score + 0.35 * form_score + 0.10 * brand_bonus + volume_bonus + price_bonus
+            total = (
+                0.45 * strength_score
+                + 0.30 * form_score
+                + 0.10 * brand_bonus
+                + volume_bonus
+                + pack_bonus
+                + price_bonus
+            )
 
             scored.append((total, idx, row))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+
+        if src_pack or src_volume:
+            preferred: List[Tuple[float, int, dict]] = []
+            fallback: List[Tuple[float, int, dict]] = []
+            for item in scored:
+                cand = row_numeric_constraints(item[2], self.ingredient_col)
+                pack_ok = not src_pack or cand["pack_size"] == src_pack
+                vol_ok = not src_volume or cand["volume_ml"] == src_volume
+                if pack_ok and vol_ok:
+                    preferred.append(item)
+                elif (src_pack and not cand["pack_size"]) or (src_volume and not cand["volume_ml"]):
+                    fallback.append(item)
+            scored = preferred + fallback if preferred else scored
 
         results: List[dict] = []
         for total, idx, row in scored[:max_results]:

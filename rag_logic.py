@@ -63,6 +63,7 @@ from retrieval import DrugRetrievalEngine, extract_strengths
 from medication_context import (
     FORM_NOT_FOUND_MSG,
     NO_APPROPRIATE_RESULT_MSG,
+    NO_SUBSTITUTE_MSG,
     MedicationSearchContext,
     extract_requested_form,
     ingredient_hint_for_trade,
@@ -1455,7 +1456,7 @@ def search_product_queries(
             return [], [], NOT_FOUND_MSG, False
         if not sub_records:
             src_name = source_records[0].get("name_ar") or source_records[0].get("name_en", "")
-            return [], source_records, f"مفيش بدائل تانية بنفس المادة والشكل لـ {src_name} في الداتاسيت.", False
+            return [], source_records, NO_SUBSTITUTE_MSG, False
         return sub_records, source_records, None, False
 
     # Multi-drug price/info queries
@@ -1538,8 +1539,8 @@ def search_substitutes(
 ) -> tuple:
     """Return (source_records, substitute_records) from database only."""
     lookup_query = extract_drug_name_from_query(query) or query
-    if med_context and med_context.drug_name:
-        lookup_query = med_context.drug_name
+    if med_context and (med_context.trade_name or med_context.drug_name):
+        lookup_query = med_context.trade_name or med_context.drug_name
     form_filter = requested_form or (med_context.form_key if med_context else "")
     source_rows = search_drugs_by_name(
         lookup_query,
