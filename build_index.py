@@ -26,6 +26,17 @@ BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "64"))
 
 
 def main() -> None:
+    if os.path.isfile(FAISS_INDEX_PATH):
+        try:
+            existing = faiss.read_index(FAISS_INDEX_PATH)
+            print(f"Skipping build — {FAISS_INDEX_PATH} already exists ({existing.ntotal} vectors)")
+            return
+        except Exception as e:
+            print(f"Existing {FAISS_INDEX_PATH} unreadable ({e}); rebuilding…")
+
+    if not os.path.isfile(CSV_PATH):
+        raise SystemExit(f"CSV not found: {CSV_PATH}")
+
     print(f"Loading {CSV_PATH}…")
     df = pd.read_csv(CSV_PATH).fillna("").astype(str)
     ingredient_col = "ingredient_clean" if "ingredient_clean" in df.columns else "active_ingredient"
@@ -52,7 +63,7 @@ def main() -> None:
     if "combined" not in pd.read_csv(CSV_PATH, nrows=1).columns:
         out_csv = CSV_PATH.replace(".csv", "_with_combined.csv")
         df.to_csv(out_csv, index=False)
-        print(f"ℹ️  Saved {out_csv} with combined column")
+        print(f"Saved {out_csv} with combined column")
 
     del model, vectors, df
     gc.collect()
