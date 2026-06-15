@@ -26,11 +26,11 @@ build_index.py, then committed to the repository as:
 
 At startup this service does:
   1. Read egypt_drugs_cleaned_utf8.csv              (~instant)
-  2. Load faiss.index with faiss.read_index()       (~instant, file I/O)
-  3. Load SentenceTransformer weights               (~5–15 s, once)
+  2. Load faiss.index with faiss.read_index()       (~instant, only if file exists)
 
-It does NOT call embed_model.encode() on the dataset — ever.
-Per-request cost: encode one short query string (~1–5 tokens).
+It does NOT run build_index.py, call embed_model.encode() on the dataset, or
+load SentenceTransformer at startup. The embed model loads lazily on the first
+semantic query when ENABLE_SEMANTIC_SEARCH=true.
 
 Run with:
     uvicorn app:app --host 0.0.0.0 --port $PORT
@@ -933,14 +933,14 @@ try:
 except Exception as e:
     print(f"[ERR] CSV load error: {e}")
 
-try:
-    index = faiss.read_index(FAISS_INDEX_PATH)
-    print(f"[OK] FAISS index loaded — {index.ntotal} vectors")
-except FileNotFoundError as e:
-    print(f"[ERR] Missing precomputed file: {e}")
-    print("   Run build_index.py offline to generate faiss.index")
-except Exception as e:
-    print(f"[ERR] FAISS index load error: {e}")
+if os.path.isfile(FAISS_INDEX_PATH):
+    try:
+        index = faiss.read_index(FAISS_INDEX_PATH)
+        print(f"[OK] FAISS index loaded — {index.ntotal} vectors")
+    except Exception as e:
+        print(f"[ERR] FAISS index load error: {e}")
+else:
+    print(f"[WARN] {FAISS_INDEX_PATH} not found — semantic search disabled (lexical-only)")
 
 if not df.empty:
     if ENABLE_SEMANTIC_SEARCH and index is not None:
