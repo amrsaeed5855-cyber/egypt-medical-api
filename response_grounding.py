@@ -10,13 +10,6 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
-DIAGNOSIS_PATTERNS = [
-    (r"عندك\s+(?:انفلونزا|التهاب\s+رئوي|كورونا|covid)", "الأعراض محتاجة تقييم طبي"),
-    (r"ده\s+(?:انفلونزا|التهاب|عدوى\s+بكتير)", "الأعراض محتاجة تقييم طبي"),
-    (r"تشخيص(?:ك|ي)?\s*(?:هو|إنه|انه)", "التشخيص مش من اختصاص الصيدلي"),
-    (r"you have (?:flu|pneumonia|infection)", "symptoms need medical evaluation"),
-]
-
 OVERCONFIDENT_PHRASES = [
     "متقلقش خالص", "متقلقش", "بسيطة", "حاجة بسيطة", "إن شاء الله حاجة بسيطة",
     "مفيش حاجة تقلق", "عادي خالص", "اكيد حاجة بسيطة", "مفيش خطر",
@@ -41,8 +34,6 @@ def sanitize_medical_text(text: str) -> str:
     out = (text or "").strip()
     for phrase in OVERCONFIDENT_PHRASES:
         out = out.replace(phrase, "محتاجين نجمع تفاصيل أكتر قبل الحكم")
-    for pattern, replacement in DIAGNOSIS_PATTERNS:
-        out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
     return out.strip()
 
 

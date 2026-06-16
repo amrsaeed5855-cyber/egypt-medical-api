@@ -14,7 +14,7 @@ Architecture
 * It returns **structured workflow responses** so ElevenLabs can resume control.
 
 Scope: pharmacy only — drug info, prices, ingredients, substitutes from dataset.
-No diagnosis. Out of scope → `RETURN_TO_ORCHESTRATOR: true` to ElevenLabs.
+Out-of-scope pharmacy requests → `RETURN_TO_ORCHESTRATOR: true` to ElevenLabs.
 Every drug shown includes dataset row number, price, and active ingredient.
 
 Startup architecture (Railway-compatible — no OOM)
@@ -123,7 +123,7 @@ _rag_lock = Lock()
 # ② SYSTEM PROMPT
 # ══════════════════════════════════════════════════════════════════════════════
 SYSTEM_PROMPT = """أنت صيدلي مصري عندك 15 سنة خبرة — **subagent صيدلة** داخل workflow ElevenLabs.
-الوكيل الرئيسي بيدير المحادثة العامة والتشخيص والحجز. أنت للصيدلة فقط.
+الوكيل الرئيسي بيدير المحادثة العامة والحجز. أنت للصيدلة فقط.
 
 ## دورك
 - شرح استخدام، تحذيرات، وملاحظات دوائية.
@@ -136,15 +136,15 @@ SYSTEM_PROMPT = """أنت صيدلي مصري عندك 15 سنة خبرة — **
 - اكتب **إرشادات وملاحظات فقط**.
 
 ## ممنوع
-- لا تشخّص ولا تحجز مواعيد.
+- لا تحجز مواعيد.
 - لا تكتب بلوكات 💊 أو أرقام صفوف.
-- لو طلب تشخيص أو حجز أو علاج لأعراض أو طوارئ → `RETURN_TO_ORCHESTRATOR: true`.
+- لو طلب حجز أو علاج لأعراض أو طوارئ → `RETURN_TO_ORCHESTRATOR: true`.
 
 ## بلوك workflow (إلزامي)
 ───WORKFLOW_RESPONSE───
 TASK_STATUS: completed|needs_info|out_of_scope|escalate
 RETURN_TO_ORCHESTRATOR: true|false
-ESCALATION_REASON: none|booking|diagnosis|emergency|referral
+ESCALATION_REASON: none|booking|emergency|referral
 MISSING_INFO: item1 | item2
 """
 
@@ -260,10 +260,6 @@ OUT_OF_SCOPE_PATTERNS = {
     "booking": [
         r"حجز", r"موعد", r"appointment", r"book\s", r"احجز", r"عايز\s*موعد",
         r"ميعاد", r"كشف\s*عند", r"احجزلي",
-    ],
-    "diagnosis": [
-        r"ايه\s*المرض", r"عندي\s*ايه", r"تشخيص", r"diagnos",
-        r"ايه\s*سبب", r"هل\s*ده\s*خطير",
     ],
     "referral": [
         r"تحويل\s*لدكتور", r"عايز\s*دكتور", r"طبيب\s*متخصص",
@@ -421,7 +417,6 @@ def apply_delegation_context(ctx: PatientContext, delegation: Optional[dict]) ->
 def out_of_scope_response(reason: str) -> WorkflowResponse:
     messages = {
         "booking": "حجز المواعيد مش من اختصاص الصيدلي — هرجعك للمساعد الرئيسي يحجزلك.",
-        "diagnosis": "التشخيص الطبي مش من اختصاص الصيدلي — هرجعك للمساعد الرئيسي يقيّم حالتك.",
         "referral": "التحويل لطبيب مختص محتاج المساعد الرئيسي — هرجعك له دلوقتي.",
         "symptom": "اقتراح علاج للأعراض مش من نطاق البحث عن الأدوية — هرجعك للمساعد الرئيسي.",
     }
