@@ -126,38 +126,19 @@ SYSTEM_PROMPT = """أنت صيدلي مصري عندك 15 سنة خبرة — **
 الوكيل الرئيسي بيدير المحادثة العامة والتشخيص والحجز. أنت للصيدلة فقط.
 
 ## دورك
-- شرح أدوية، مواد فعالة، تحذيرات، تفاعلات.
-- اقتراح أدوية OTC آمنة من **قاعدة البيانات المصرية** فقط.
-- إجابات قصيرة وواضحة بالعامية المصرية.
-- لو المريض ذكر معلومة بنفسه (سن، أمراض مزمنة، أدوية، حساسية) متسألش عنها تاني.
+- شرح استخدام، تحذيرات، وملاحظات دوائية.
+- إجابات قصيرة بالعامية المصرية.
+- البدائل والأسعار من قاعدة البيانات — لا تخترع منتجات.
 
-## استفسارات المنتج (سعر / بديل / مادة فعالة / تفاصيل / توفر)
-- **لا تسأل** عن سن أو حمل أو حساسية أو أدوية حالية.
-- **لا تكتب** تفاصيل الأدوية (اسم، سعر، صف، مادة فعالة) في النص — النظام يعرضها في بطاقات منفصلة.
-- اكتب **إرشادات وملاحظات فقط** (تحذيرات، نصائح استخدام، توصيات).
-- البدائل يحددها النظام من الداتاسيت — لا تخترع منتجات.
+## استفسارات المنتج
+- **لا تسأل** عن سن أو حمل أو حساسية لسؤال سعر/بديل.
+- **لا تكتب** أسماء أو أسعار أو مواد فعالة — البطاقات تعرضها.
+- اكتب **إرشادات وملاحظات فقط**.
 
-## أعراض بسيطة OTC (صداع، كحة، حرارة...)
-- اسأل **سؤال واحد أو اتنين بس** لو ناقص معلومة ضرورية.
-- لا تسأل عن الحمل لرجل أو لمراهق ذكر.
-- لا تكرر أسئلة أجاب عليها المريض في نفس المحادثة.
-
-## ممنوع تماماً
-- **لا تشخّص** — لا تذكر اسم مرض كتشخيص.
-- لا تحجز مواعيد ولا تعمل triage طبي.
-- لا تكتب بلوكات 💊 أو أرقام صفوف — البطاقات تعرض الدواء.
-- لو المريض عايز تشخيص أو حجز أو طوارئ → `RETURN_TO_ORCHESTRATOR: true`.
-
-## سلامة دوائية (عند اقتراح علاج لأعراض فقط)
-- لا NSAIDs مع ضغط/سكر/كلى.
-- لا فينيل إفرين/سودوإيفيدرين مع ضغط.
-- استخدم المواد الفعالة **بالإنجليزي بدقة** في INGREDIENTS (مثل paracetamol مش "مسكن").
-
-## بلوك الأدوية (لاقتراح علاج أعراض فقط — ليس لاستفسارات المنتج)
-───CLINICAL_PLAN───
-INGREDIENTS: paracetamol
-EXCLUDED_INGREDIENTS: ibuprofen
-NON_DRUG_ADVICE: نصيحة1 | نصيحة2
+## ممنوع
+- لا تشخّص ولا تحجز مواعيد.
+- لا تكتب بلوكات 💊 أو أرقام صفوف.
+- لو طلب تشخيص أو حجز أو علاج لأعراض أو طوارئ → `RETURN_TO_ORCHESTRATOR: true`.
 
 ## بلوك workflow (إلزامي)
 ───WORKFLOW_RESPONSE───
@@ -174,13 +155,8 @@ MISSING_INFO: item1 | item2
 @dataclass
 class ClinicalPlan:
     visible_text: str = ""
-    ingredients: list = field(default_factory=list)
-    excluded_ingredients: set = field(default_factory=set)
-    escalation_level: str = "none"
-    diagnosis_confidence: str = "medium"
-    differential: list = field(default_factory=list)
     non_drug_advice: list = field(default_factory=list)
-    is_conversational: bool = True
+    escalation_level: str = "none"
     workflow: dict = field(default_factory=dict)
 
 
@@ -215,43 +191,17 @@ class PatientContext:
     sex: str = "unknown"
     pregnant: Optional[bool] = None
     breastfeeding: Optional[bool] = None
-    duration_text: str = ""
-    fever_text: str = ""
-    symptoms: list = field(default_factory=list)
     allergies: list = field(default_factory=list)
     allergies_asked: bool = False
     chronic_conditions: list = field(default_factory=list)
-    current_meds: list = field(default_factory=list)
-    meds_confirmed: bool = False
-    meds_denied: bool = False
-    liver_disease_details: str = ""
-    liver_assessed: bool = False
     complaint_text: str = ""
     red_flags: list = field(default_factory=list)
-    cough_type: str = ""
-    sore_throat: bool = False
-    nasal_congestion: bool = False
-    breathing_difficulty: bool = False
-    symptom_severity: str = ""
-    diarrhea_blood: bool = False
-    diarrhea_fever: bool = False
-    dental_swelling: bool = False
-    dental_pus: bool = False
-    is_caregiver: bool = False
-    child_age: Optional[int] = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ④ TEXT / NLP UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
 AR_NUMS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-
-COMMON_SYMPTOMS = [
-    "حرارة", "سخونية", "كحة", "كحه", "رشح", "احتقان", "التهاب حلق", "زكام",
-    "إسهال", "اسهال", "ترجيع", "قيء", "غثيان", "مغص", "صداع", "دوخة",
-    "ضيق نفس", "وجع صدر", "ألم صدر", "حرقان بول", "حرقان", "طفح", "هرش",
-    "ألم بطن", "وجع بطن", "ألم معدة", "حموضة", "إمساك", "امساك", "ألم ظهر"
-]
 
 REAL_RED_FLAG_PATTERNS = [
     (r"ضيق نفس شديد|مش عارف اتنفس|نهجان شديد|اختناق|صعوبة تنفس شديد", "ضيق نفس شديد"),
@@ -299,37 +249,6 @@ INGREDIENT_SAFETY_RULES = {
     "oral rehydration salts": {"purpose": "تعويض سوائل الجسم"},
 }
 
-OPHTHALMIC_KEYWORDS = [
-    "eye drop", "eye drops", "ophthalmic", "optical", "قطرة عين", "قطرة للعين",
-    "قطرة عيون", "optofrine", "eye solution",
-]
-
-NASAL_KEYWORDS = [
-    "nasal", "nose spray", "أنف", "انف", "بخاخ أنف", "بخاخ انف", "nasal spray",
-]
-
-EYE_SYMPTOMS = ["عين", "عيون", "احمرار العين", "حكة العين", "دموع", "رمد", "conjunctivitis"]
-
-RESPIRATORY_SYMPTOMS = [
-    "حرارة", "سخونية", "كحة", "كحه", "رشح", "احتقان", "التهاب حلق", "زكام", "صداع",
-]
-
-MEDS_DENIAL_PATTERNS = [
-    r"مش باخد\s*(ادويه|ادوية|علاج)",
-    r"مفيش\s*(ادويه|ادوية|علاج)",
-    r"لا\s*باخدش",
-    r"مش بتناول",
-    r"مش باخد حاجه",
-    r"مش باخد حاجة",
-    r"مش على علاج",
-    r"مش باخد ادويه",
-]
-
-MEDS_CONFIRM_PATTERNS = [
-    r"باخد\s+", r"بتناول\s+", r"على علاج\s+", r"ادويتي\s+", r"ادوية\s+",
-    r"meds?\s*:", r"medications?\s*:",
-]
-
 PRODUCT_INFO_QUERY_TYPES = frozenset({"product_info", "substitute"})
 MAX_DRUG_CARDS = 3
 MAX_DRUG_CARDS_MORE = 3
@@ -358,11 +277,6 @@ OUT_OF_SCOPE_PATTERNS = {
         r"للإسهال", r"medicine for", r"treatment for",
     ],
 }
-
-LIVER_DETAIL_KEYWORDS = [
-    "كبد دهني", "التهاب كبد", "تليف", "cirrhosis", "hepatitis", "فيروس",
-    "تحاليل كبد", "alt", "ast", "وظائف كبد",
-]
 
 EXCLUDED_FORMS = [
     "vial", "ampoule", "injection", "infusion", "iv", "i.v", "suppository",
@@ -394,20 +308,6 @@ def conversation_to_text(history: list) -> str:
     return "\n".join(
         msg.get("content", "") for msg in (history or []) if msg.get("role") == "user"
     )
-
-
-def arabic_words_to_number(words: str) -> Optional[int]:
-    word_map = {
-        "واحد": 1, "واحده": 1, "واحدة": 1, "اثنان": 2, "اثنين": 2, "اتنين": 2,
-        "ثلاثة": 3, "تلاته": 3, "تلاتة": 3, "اربع": 4, "اربعة": 4, "اربعه": 4,
-        "أربع": 4, "أربعة": 4, "خمسة": 5, "خمسه": 5, "ستة": 6, "سته": 6,
-        "سبعة": 7, "سبعه": 7, "ثمانية": 8, "ثمانيه": 8, "تسعة": 9, "تسعه": 9,
-        "عشرة": 10, "عشره": 10,
-    }
-    for w, num in word_map.items():
-        if w in words:
-            return num
-    return None
 
 
 def extract_age(text: str) -> Optional[int]:
@@ -442,30 +342,6 @@ def extract_sex(text: str) -> str:
     if any(w in norm for w in ["انثى", "انثي", "ست", "بنت", "female", "حامل", "مرضع"]):
         return "female"
     return "unknown"
-
-
-def extract_duration(text: str) -> str:
-    text = normalize_text(text)
-    m = re.search(r"من\s+([^\s]+)\s+(يوم|ساعة|ساعه|ساعات|ايام|أيام|دقيقة|دقائق)", text)
-    if m:
-        num_word, unit = m.group(1), m.group(2)
-        num = int(num_word) if num_word.isdigit() else arabic_words_to_number(num_word)
-        if num:
-            if "دقيق" in unit: return f"{num} دقيقة"
-            if "ساع" in unit:  return f"{num} ساعة"
-            return f"{num} يوم"
-    m = re.search(r"(\d+|واحد|اثنين|اتنين|ثلاثة|تلاته|اربع|اربعة)\s+(يوم|ساعة|دقيقة|دقائق)", text)
-    if m:
-        num_word, unit = m.group(1), m.group(2)
-        num = int(num_word) if num_word.isdigit() else arabic_words_to_number(num_word)
-        if num:
-            if "دقيق" in unit: return f"{num} دقيقة"
-            if "ساع" in unit:  return f"{num} ساعة"
-            return f"{num} يوم"
-    if re.search(r"يومين", text):                       return "يومين"
-    if re.search(r"دلوقتي|النهارده|لسه من شويه", text): return "أقل من يوم"
-    if re.search(r"امبارح|أمس", text):                  return "يوم"
-    return ""
 
 
 def has_negation_response(text: str) -> bool:
@@ -512,102 +388,6 @@ def extract_conditions(text: str) -> list:
     ])
 
 
-def extract_symptoms(text: str) -> list:
-    norm = normalize_text(text)
-    return [s for s in COMMON_SYMPTOMS if normalize_text(s) in norm]
-
-
-def extract_cough_type(text: str) -> str:
-    if re.search(r"ببلغم|معاها بلغم|كحة بلغم|كحه بلغم", text, re.IGNORECASE):
-        return "wet"
-    if re.search(r"جافه|جافة|ناشفة|كحة جافه|كحه ناشفه", text, re.IGNORECASE):
-        return "dry"
-    return "unknown"
-
-
-def extract_diarrhea_flags(text: str):
-    blood = bool(re.search(r"دم في البراز|براز فيه دم|دم مع البراز", text, re.IGNORECASE))
-    fever = bool(re.search(r"حراره|سخونيه", text, re.IGNORECASE))
-    return blood, fever
-
-
-def extract_dental_flags(text: str):
-    swelling = bool(re.search(r"تورم|ورم في اللثه|وجه وارم", text, re.IGNORECASE))
-    pus      = bool(re.search(r"صديد|ريحة كريهه|إفرازات", text, re.IGNORECASE))
-    return swelling, pus
-
-
-def extract_meds_status(text: str) -> tuple:
-    norm = normalize_text(text)
-    if any(re.search(p, norm) for p in MEDS_DENIAL_PATTERNS):
-        return [], True, True
-    meds = extract_list_after_keywords(
-        text, ["ادويه", "ادوية", "meds", "medications", "باخد", "باخد علاج", "بتناول"],
-        check_negation=False,
-    )
-    confirmed = bool(meds) or any(re.search(p, norm) for p in MEDS_CONFIRM_PATTERNS)
-    if confirmed and not meds and has_negation_response(text):
-        return [], True, True
-    return meds, confirmed, False
-
-
-def extract_liver_details(text: str) -> tuple:
-    norm = normalize_text(text)
-    if "liver" not in norm and "كبد" not in norm:
-        return "", False
-    details = []
-    for kw in LIVER_DETAIL_KEYWORDS:
-        if normalize_text(kw) in norm:
-            details.append(kw)
-    assessed = bool(details) or bool(re.search(r"تحاليل|alt|ast|وظائف", norm))
-    return "، ".join(dedupe_keep_order(details)), assessed
-
-
-def extract_respiratory_assessment(text: str) -> dict:
-    norm = normalize_text(text)
-    return {
-        "sore_throat": bool(re.search(r"التهاب حلق|وجع حلق|حلق يوجع|حلق ملتهب", norm)),
-        "nasal_congestion": bool(re.search(r"احتقان|انسداد انف|رشح|زكام|انسداد الأنف", norm)),
-        "breathing_difficulty": bool(re.search(r"ضيق نفس|صعوبة تنفس|مش قادر اتنفس", norm)),
-        "symptom_severity": (
-            "شديدة" if re.search(r"شديد|جدا|مش قادر|تعبان اوي", norm)
-            else "متوسطة" if re.search(r"متوسط|عادي", norm)
-            else "خفيفة" if re.search(r"خفيف|بسيط", norm)
-            else ""
-        ),
-    }
-
-
-def has_eye_symptoms(ctx: PatientContext) -> bool:
-    combined = normalize_text(" ".join(ctx.symptoms) + " " + ctx.complaint_text)
-    return any(normalize_text(s) in combined for s in EYE_SYMPTOMS)
-
-
-def has_respiratory_symptoms(ctx: PatientContext) -> bool:
-    combined = normalize_text(" ".join(ctx.symptoms))
-    return any(normalize_text(s) in combined for s in RESPIRATORY_SYMPTOMS)
-
-
-def is_ophthalmic_product(name_ar: str, name_en: str) -> bool:
-    combined = (name_ar + " " + name_en).lower()
-    return any(kw in combined for kw in OPHTHALMIC_KEYWORDS)
-
-
-def is_nasal_product(name_ar: str, name_en: str) -> bool:
-    combined = (name_ar + " " + name_en).lower()
-    return any(kw in combined for kw in NASAL_KEYWORDS)
-
-
-def is_form_relevant_for_context(name_ar: str, name_en: str, ctx: PatientContext) -> bool:
-    if is_ophthalmic_product(name_ar, name_en):
-        return has_eye_symptoms(ctx)
-    if is_nasal_product(name_ar, name_en):
-        if has_respiratory_symptoms(ctx):
-            return True
-        return ctx.nasal_congestion or any(s in ctx.symptoms for s in ["رشح", "احتقان", "زكام"])
-    return True
-
-
 def detect_out_of_scope(query: str) -> Optional[str]:
     norm = normalize_text(query)
     for reason, patterns in OUT_OF_SCOPE_PATTERNS.items():
@@ -630,29 +410,11 @@ def apply_delegation_context(ctx: PatientContext, delegation: Optional[dict]) ->
         ctx.pregnant = bool(pc["pregnant"])
     if pc.get("breastfeeding") is not None:
         ctx.breastfeeding = bool(pc["breastfeeding"])
-    if pc.get("symptoms"):
-        ctx.symptoms = dedupe_keep_order(list(pc["symptoms"]))
     if pc.get("allergies") is not None:
         ctx.allergies = list(pc["allergies"])
         ctx.allergies_asked = True
     if pc.get("chronic_conditions"):
         ctx.chronic_conditions = dedupe_keep_order(list(pc["chronic_conditions"]))
-    if pc.get("current_medications") is not None:
-        meds = pc["current_medications"]
-        if isinstance(meds, list):
-            ctx.current_meds = meds
-            ctx.meds_confirmed = True
-            ctx.meds_denied = len(meds) == 0
-        elif isinstance(meds, str) and meds.strip().lower() in ("none", "لا", "مفيش"):
-            ctx.meds_denied = True
-            ctx.meds_confirmed = True
-    if pc.get("duration"):
-        ctx.duration_text = str(pc["duration"])
-    if pc.get("fever"):
-        ctx.fever_text = str(pc["fever"])
-    if pc.get("liver_disease_details"):
-        ctx.liver_disease_details = str(pc["liver_disease_details"])
-        ctx.liver_assessed = True
     if pc.get("red_flags"):
         ctx.red_flags = dedupe_keep_order(list(pc["red_flags"]))
     return ctx
@@ -676,68 +438,43 @@ def out_of_scope_response(reason: str) -> WorkflowResponse:
 def extract_context(query: str, history: list) -> PatientContext:
     full_text = (conversation_to_text(history) + "\n" + query).strip()
     norm = normalize_text(full_text)
-    is_caregiver = bool(re.search(r"ابني|بنتي|طفلي|العيل|البنت|الولد", norm))
     child_age = None
-    if is_caregiver:
-        m = re.search(r"عنده\s*(\d+)\s*سنه", norm)
-        if m:
-            child_age = int(m.group(1))
+    m = re.search(r"عنده\s*(\d+)\s*سنه", norm)
+    if m:
+        child_age = int(m.group(1))
     sex = extract_sex(full_text)
     pregnant, breastfeeding = parse_pregnancy_breastfeeding(full_text)
-    duration_text = extract_duration(full_text)
-    fever_match   = re.search(r"(حراره\s*\d+(?:\.\d+)?|سخونيه\s*\d+(?:\.\d+)?|حراره|سخونيه|سخونية)", norm, re.IGNORECASE)
-    fever_text    = fever_match.group(1).strip() if fever_match else ""
     allergies = extract_list_after_keywords(full_text, ["حساسيه", "allergy", "allergies", "allergic to"])
     allergies_asked = bool(allergies) or bool(re.search(r"حساسيه|allergy", norm))
     if has_negation_response(query) and re.search(r"حساسيه|allergy", normalize_text(query)):
         allergies = []
         allergies_asked = True
-    current_meds, meds_confirmed, meds_denied = extract_meds_status(full_text)
-    liver_details, liver_assessed = extract_liver_details(full_text)
-    resp = extract_respiratory_assessment(full_text)
     chronic_conditions = extract_conditions(full_text)
-    symptoms           = extract_symptoms(full_text)
-    red_flags          = []
+    red_flags = []
     for pattern, label in REAL_RED_FLAG_PATTERNS:
         if re.search(pattern, norm, re.IGNORECASE):
             red_flags.append(label)
-    cough_type                    = extract_cough_type(full_text)
-    diarrhea_blood, diarrhea_fever = extract_diarrhea_flags(full_text)
-    dental_swelling, dental_pus   = extract_dental_flags(full_text)
     age = extract_age(full_text)
     if child_age and not age:
         age = child_age
     return PatientContext(
-        age=age, sex=sex, pregnant=pregnant, breastfeeding=breastfeeding,
-        duration_text=duration_text, fever_text=fever_text, symptoms=symptoms,
-        allergies=allergies, allergies_asked=allergies_asked,
-        chronic_conditions=chronic_conditions, current_meds=current_meds,
-        meds_confirmed=meds_confirmed, meds_denied=meds_denied,
-        liver_disease_details=liver_details, liver_assessed=liver_assessed,
-        complaint_text=query.strip(), red_flags=dedupe_keep_order(red_flags),
-        cough_type=cough_type, sore_throat=resp["sore_throat"],
-        nasal_congestion=resp["nasal_congestion"],
-        breathing_difficulty=resp["breathing_difficulty"],
-        symptom_severity=resp["symptom_severity"],
-        diarrhea_blood=diarrhea_blood, diarrhea_fever=diarrhea_fever,
-        dental_swelling=dental_swelling, dental_pus=dental_pus,
-        is_caregiver=is_caregiver, child_age=child_age,
+        age=age,
+        sex=sex,
+        pregnant=pregnant,
+        breastfeeding=breastfeeding,
+        allergies=allergies,
+        allergies_asked=allergies_asked,
+        chronic_conditions=chronic_conditions,
+        complaint_text=query.strip(),
+        red_flags=dedupe_keep_order(red_flags),
     )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ⑤ INTAKE GATE
 # ══════════════════════════════════════════════════════════════════════════════
-REAL_URGENT_FLAGS = [
-    "ضيق نفس شديد", "ألم صدر", "إغماء", "تشنجات",
-    "قيء دم", "نزيف", "شلل مفاجئ", "حرارة فوق 40",
-    "تيبس الرقبة", "صداع شديد", "قيء مستمر", "ارتباك",
-]
-
-
 def has_real_emergency(ctx: PatientContext) -> bool:
-    text = (ctx.complaint_text + " " + " ".join(ctx.symptoms)).lower()
-    return any(flag in text for flag in REAL_URGENT_FLAGS) or bool(ctx.red_flags)
+    return bool(ctx.red_flags)
 
 
 def subagent_emergency_escalation(ctx: PatientContext) -> Optional[WorkflowResponse]:
@@ -867,37 +604,15 @@ def parse_clinical_plan(raw_text: str) -> ClinicalPlan:
         plan.workflow = parse_workflow_fields(wf_part)
         text = visible.strip()
 
-    if "───CLINICAL_PLAN───" not in text:
-        plan.visible_text = text
-        plan.is_conversational = True
-        return plan
+    if "───CLINICAL_PLAN───" in text:
+        text = text.split("───CLINICAL_PLAN───", 1)[0].strip()
+        machine_part = (raw_text or "").split("───CLINICAL_PLAN───", 1)[1]
+        raw_advice = _extract_field(r"NON_DRUG_ADVICE:\s*([^\n]*)", machine_part)
+        if raw_advice:
+            plan.non_drug_advice = [a.strip() for a in raw_advice.split("|") if a.strip()]
+        plan.escalation_level = _extract_field(r"ESCALATION_LEVEL:\s*(\w+)", machine_part, "none")
 
-    plan.is_conversational = False
-    visible_part, machine_part = text.split("───CLINICAL_PLAN───", 1)
-    plan.visible_text = visible_part.strip()
-
-    raw_ing = _extract_field(r"INGREDIENTS:\s*([^\n]*)", machine_part)
-    non_valid = {"useful for cough", "useful for pain", "علاج", "دواء", "unknown", " ", ""}
-    plan.ingredients = [
-        i.strip().lower()
-        for i in raw_ing.split(",")
-        if i.strip().lower() not in non_valid and len(i.strip()) > 3
-    ]
-
-    raw_excl = _extract_field(r"EXCLUDED_INGREDIENTS:\s*([^\n]*)", machine_part)
-    plan.excluded_ingredients = {e.strip().lower() for e in raw_excl.split(",") if e.strip()}
-
-    plan.escalation_level = _extract_field(r"ESCALATION_LEVEL:\s*(\w+)", machine_part, "none")
-    plan.diagnosis_confidence = _extract_field(r"DIAGNOSIS_CONFIDENCE:\s*(\w+)", machine_part, "medium")
-
-    raw_advice = _extract_field(r"NON_DRUG_ADVICE:\s*([^\n]*)", machine_part)
-    if raw_advice:
-        plan.non_drug_advice = [a.strip() for a in raw_advice.split("|") if a.strip()]
-
-    raw_diff = _extract_field(r"DIFFERENTIAL:\s*([^\n]*)", machine_part)
-    if raw_diff:
-        plan.differential = [d.strip() for d in raw_diff.split("|") if d.strip()]
-
+    plan.visible_text = text
     return plan
 
 
@@ -983,10 +698,6 @@ def screen_ingredient_safety(active_ingredient: str, ctx: PatientContext):
         for cond in rule.get("avoid_conditions", []):
             if cond in ctx.chronic_conditions:
                 reasons.append(f"مستبعد بسبب {cond}")
-    if "loperamide" in ai and (ctx.diarrhea_blood or ctx.diarrhea_fever):
-        reasons.append("يمنع لوبيراميد مع دم أو حرارة في الإسهال")
-    if "dextromethorphan" in ai and ctx.cough_type == "wet":
-        reasons.append("دا مضاد سعال - مش مناسب للكحة ببلغم")
     nsaids = ["ibuprofen", "diclofenac", "naproxen"]
     if any(n in ai for n in nsaids) and (
         "hypertension" in ctx.chronic_conditions or "diabetes" in ctx.chronic_conditions
@@ -1005,10 +716,6 @@ def caution_notes_for_context(active_ingredient: str, ctx: PatientContext) -> li
         for cond in rule.get("caution_conditions", []):
             if cond in ctx.chronic_conditions:
                 notes.append(f"يحتاج حذر مع {cond}")
-    if ctx.diarrhea_blood or ctx.diarrhea_fever:
-        notes.append("الإسهال مع دم/حرارة يستدعي طبيباً - لا تستخدم أدوية إسهال بدون استشارة")
-    if ctx.cough_type == "wet" and "dextromethorphan" in ai:
-        notes.append("للكحة ببلغم الأفضل طارد بلغم (guaifenesin) مش مضاد سعال")
     nsaids = ["ibuprofen", "diclofenac", "naproxen"]
     if any(n in ai for n in nsaids) and (
         "hypertension" in ctx.chronic_conditions or "diabetes" in ctx.chronic_conditions
@@ -1064,8 +771,6 @@ def _drug_row_filter(row: dict, row_index: int, _query: str, ctx: PatientContext
         return "excluded_form"
     if any(f in name_ar for f in EXCLUDED_FORMS):
         return "excluded_form"
-    if not is_form_relevant_for_context(name_ar, name_en, ctx):
-        return "form_context"
     allowed, _ = screen_ingredient_safety(ai, ctx)
     if not allowed:
         return "safety"
@@ -1593,17 +1298,13 @@ def build_patient_summary(ctx: PatientContext) -> str:
             return "نعم" if v else "لا"
         return str(v).strip() or fallback
 
-    meds_status = "لا يتناول أدوية" if ctx.meds_denied else (
-        val(ctx.current_meds) if ctx.meds_confirmed else "غير مؤكد"
-    )
     return f"""ملخص صيدلي (من الوكيل الرئيسي أو المحادثة):
 - العمر: {val(ctx.age)}
 - الجنس: {ctx.sex}
 - حمل/رضاعة: {val(ctx.pregnant)}/{val(ctx.breastfeeding)}
 - الحساسية: {val(ctx.allergies) if ctx.allergies_asked or ctx.allergies else "غير مؤكدة"}
 - الأمراض المزمنة: {val(ctx.chronic_conditions)}
-- الأدوية الحالية: {meds_status}
-- طلب المريض/الأعراض المذكورة: {val(ctx.symptoms) or ctx.complaint_text[:120]}
+- سؤال المريض: {ctx.complaint_text[:120]}
 """
 
 
@@ -1845,13 +1546,8 @@ class PatientContextPayload(BaseModel):
     sex: Optional[str] = None
     pregnant: Optional[bool] = None
     breastfeeding: Optional[bool] = None
-    symptoms: list = []
     allergies: list = []
     chronic_conditions: list = []
-    current_medications: Optional[list] = None
-    duration: Optional[str] = None
-    fever: Optional[str] = None
-    liver_disease_details: Optional[str] = None
     red_flags: list = []
 
 
