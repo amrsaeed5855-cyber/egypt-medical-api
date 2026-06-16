@@ -208,25 +208,6 @@ def row_numeric_constraints(row: dict, ingredient_col: str) -> Dict[str, Any]:
     }
 
 
-def numeric_constraints_compatible(source: dict, candidate: dict, ingredient_col: str) -> bool:
-    src = row_numeric_constraints(source, ingredient_col)
-    cand = row_numeric_constraints(candidate, ingredient_col)
-
-    if src["strengths"] and not strengths_compatible(src["strengths"], cand["strengths"]):
-        return False
-
-    if src["concentration"] and cand["concentration"] and src["concentration"] != cand["concentration"]:
-        return False
-
-    if src["volume_ml"] and cand["volume_ml"] and src["volume_ml"] != cand["volume_ml"]:
-        return False
-
-    if src["pack_size"] and cand["pack_size"] and src["pack_size"] != cand["pack_size"]:
-        return False
-
-    return True
-
-
 def extract_form_key(row: dict) -> str:
     form = " ".join(
         str(row.get(k, "") or "") for k in ("form", "form_clean", "name_en", "name_ar", "dosage_clean")

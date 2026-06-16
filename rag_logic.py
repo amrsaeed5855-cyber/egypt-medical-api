@@ -13,7 +13,7 @@ Architecture
 * This subagent receives **delegated tasks** for medication guidance only.
 * It returns **structured workflow responses** so ElevenLabs can resume control.
 
-Scope: pharmacy only — drug info, prices, ingredients, OTC suggestions from dataset.
+Scope: pharmacy only — drug info, prices, ingredients, substitutes from dataset.
 No diagnosis. Out of scope → `RETURN_TO_ORCHESTRATOR: true` to ElevenLabs.
 Every drug shown includes dataset row number, price, and active ingredient.
 
@@ -153,10 +153,8 @@ MISSING_INFO: item1 | item2
 # ③ DATA CLASSES
 # ══════════════════════════════════════════════════════════════════════════════
 @dataclass
-class ClinicalPlan:
+class ParsedGeminiResponse:
     visible_text: str = ""
-    non_drug_advice: list = field(default_factory=list)
-    escalation_level: str = "none"
     workflow: dict = field(default_factory=dict)
 
 
@@ -575,7 +573,7 @@ def call_gemini(messages: list, system_prompt: str = None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CLINICAL PLAN PARSER
+# GEMINI RESPONSE PARSER
 # ══════════════════════════════════════════════════════════════════════════════
 def _extract_field(pattern: str, txt: str, default: str = "") -> str:
     m = re.search(pattern, txt)
@@ -595,25 +593,17 @@ def parse_workflow_fields(wf_text: str) -> dict:
     }
 
 
-def parse_clinical_plan(raw_text: str) -> ClinicalPlan:
-    plan = ClinicalPlan()
+def parse_gemini_response(raw_text: str) -> ParsedGeminiResponse:
+    parsed = ParsedGeminiResponse()
     text = (raw_text or "").strip()
 
     if "───WORKFLOW_RESPONSE───" in text:
         visible, wf_part = text.split("───WORKFLOW_RESPONSE───", 1)
-        plan.workflow = parse_workflow_fields(wf_part)
+        parsed.workflow = parse_workflow_fields(wf_part)
         text = visible.strip()
 
-    if "───CLINICAL_PLAN───" in text:
-        text = text.split("───CLINICAL_PLAN───", 1)[0].strip()
-        machine_part = (raw_text or "").split("───CLINICAL_PLAN───", 1)[1]
-        raw_advice = _extract_field(r"NON_DRUG_ADVICE:\s*([^\n]*)", machine_part)
-        if raw_advice:
-            plan.non_drug_advice = [a.strip() for a in raw_advice.split("|") if a.strip()]
-        plan.escalation_level = _extract_field(r"ESCALATION_LEVEL:\s*(\w+)", machine_part, "none")
-
-    plan.visible_text = text
-    return plan
+    parsed.visible_text = text
+    return parsed
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1000,7 +990,7 @@ def llm_extract_query_entities(query: str) -> dict:
         "confidence": 0.0,
     }
     prompt = (
-        'Extract JSON only: {"trade_name":"","active_ingredient":"","intent":"price|substitute|info|symptom","confidence":0.0}\n'
+        'Extract JSON only: {"trade_name":"","active_ingredient":"","intent":"price|substitute|info","confidence":0.0}\n'
         f"Query: {query.strip()[:200]}"
     )
     text, status = call_gemini(
@@ -1315,8 +1305,8 @@ def sanitize_visible_text(text: str) -> str:
     return strip_hallucinated_drug_content(sanitize_medical_text(text))
 
 
-def _workflow_from_plan(plan: ClinicalPlan, **overrides) -> dict:
-    wf = dict(plan.workflow or {})
+def _workflow_from_parsed(parsed: ParsedGeminiResponse, **overrides) -> dict:
+    wf = dict(parsed.workflow or {})
     wf.setdefault("task_status", "completed")
     wf.setdefault("return_to_orchestrator", False)
     wf.setdefault("escalation_reason", "none")
@@ -1327,13 +1317,13 @@ def _workflow_from_plan(plan: ClinicalPlan, **overrides) -> dict:
 
 def _build_workflow_response(
     text: str,
-    plan: Optional[ClinicalPlan] = None,
+    parsed: Optional[ParsedGeminiResponse] = None,
     medications: Optional[list] = None,
     warnings: Optional[list] = None,
     ingredients: Optional[list] = None,
     **wf_overrides,
 ) -> WorkflowResponse:
-    wf = _workflow_from_plan(plan or ClinicalPlan(), **wf_overrides)
+    wf = _workflow_from_parsed(parsed or ParsedGeminiResponse(), **wf_overrides)
     return WorkflowResponse(
         response=text,
         task_status=wf.get("task_status", "completed"),
@@ -1344,12 +1334,6 @@ def _build_workflow_response(
         missing_info=wf.get("missing_info", []),
         ingredients=ingredients or [],
     )
-
-
-def _guidance_suffix(plan: ClinicalPlan) -> str:
-    if not plan.non_drug_advice:
-        return ""
-    return "\n\n💡 **ملاحظات:**\n" + "\n".join(f"• {a}" for a in plan.non_drug_advice)
 
 
 def _response_text_early(text: str, records: list) -> str:
@@ -1491,29 +1475,19 @@ def pharmacy_consult(
             task_status="needs_info",
         )
 
-    plan = parse_clinical_plan(llm_response)
-    plan.visible_text = sanitize_visible_text(plan.visible_text)
+    parsed = parse_gemini_response(llm_response)
+    parsed.visible_text = sanitize_visible_text(parsed.visible_text)
 
-    if plan.workflow.get("return_to_orchestrator"):
+    if parsed.workflow.get("return_to_orchestrator"):
         return _build_workflow_response(
-            plan.visible_text or "هرجعك للمساعد الرئيسي.",
-            plan=plan,
+            parsed.visible_text or "هرجعك للمساعد الرئيسي.",
+            parsed=parsed,
             medications=medications,
         )
 
-    if plan.escalation_level == "urgent":
-        return _build_workflow_response(
-            plan.visible_text + "\n\n🚨 الحالة تستدعي تقييم طارئ من المساعد الرئيسي.",
-            plan=plan,
-            task_status="escalate",
-            return_to_orchestrator=True,
-            escalation_reason="emergency",
-            medications=medications,
-        )
-
-    def _response_text(text: str, records: list, extra: str = "") -> str:
+    def _response_text(text: str, records: list) -> str:
         return assemble_grounded_response(
-            sanitize_visible_text(text + extra),
+            sanitize_visible_text(text),
             "",
             records,
             cards_only=True,
@@ -1521,7 +1495,7 @@ def pharmacy_consult(
 
     # Product / substitute queries — database-driven, no safety triage
     if is_product_query or query_type == "substitute":
-        guidance = plan.visible_text or prebuilt_text or _fallback_product_response(
+        guidance = parsed.visible_text or prebuilt_text or _fallback_product_response(
             query,
             query_type,
             medications,
@@ -1532,8 +1506,8 @@ def pharmacy_consult(
         if not medications and not source_records and prebuilt_text:
             guidance = prebuilt_text
         return _build_workflow_response(
-            _response_text(guidance, medications, _guidance_suffix(plan)),
-            plan=plan,
+            _response_text(guidance, medications),
+            parsed=parsed,
             medications=medications,
             warnings=dedupe_keep_order([w for r in medications for w in (r.get("warnings") or [])]),
             task_status="completed",

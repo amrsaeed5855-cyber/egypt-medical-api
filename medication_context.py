@@ -88,24 +88,6 @@ class MedicationSearchContext:
         if self.strengths and not self.strength:
             self.strength = sorted(self.strengths)[0]
 
-    def to_dict(self) -> Dict[str, Any]:
-        self.sync_fields()
-        return {
-            "trade_name": self.trade_name,
-            "drug_name": self.drug_name,
-            "active_ingredient": self.active_ingredient,
-            "strength": self.strength,
-            "concentration": self.concentration,
-            "dosage_form": self.dosage_form,
-            "form_key": self.form_key,
-            "volume": self.volume,
-            "volume_ml": self.volume_ml,
-            "pack_size": self.pack_size,
-            "strengths": sorted(self.strengths),
-            "query_intent": self.query_intent,
-            "source_query": self.source_query,
-        }
-
 
 def extract_requested_form(query: str) -> tuple[str, str]:
     """

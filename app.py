@@ -2,13 +2,11 @@ import asyncio
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from typing import Optional
 
 from rag_logic import (
     pharmacy_consult,
+    ChatRequest,
     ChatResponse,
-    DelegationPayload,
     delegation_to_dict,
     _rag_lock,
     CHAT_TIMEOUT_SEC,
@@ -37,12 +35,6 @@ def health():
         "retrieval_ready": retrieval_engine is not None,
         "semantic_search": ENABLE_SEMANTIC_SEARCH and not _embed_load_failed,
     }
-
-
-class ChatRequest(BaseModel):
-    message: str
-    history: list = []
-    delegation: Optional[DelegationPayload] = None
 
 
 @app.post("/chat", response_model=ChatResponse)

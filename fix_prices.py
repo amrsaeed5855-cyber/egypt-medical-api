@@ -281,11 +281,6 @@ def main():
             name = str(r.get("name_en") or r.get("name_ar") or "")[:45]
             print(f"  FIX: {name} | {r['price_egp_raw']} -> {r['price_egp']}")
 
-    curam = cleaned[cleaned["url"].astype(str).str.contains("/3177", na=False)]
-    if not curam.empty:
-        r = curam.iloc[0]
-        print(f"\n  Curam /3177: {r['price_egp_raw']} -> {r['price_egp']} (corrected={r['price_corrected']})")
-
     if args.dry_run:
         print("\n[dry-run] No file written.")
         return
